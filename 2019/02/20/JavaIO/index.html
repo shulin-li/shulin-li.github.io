@@ -1,0 +1,375 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>JavaIO - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n文件拷贝看JavaIOFileIn/OutputStream使用FileInputStream的readBytes方法读取数据会调用native的readBytes方法123456789101112131415161718192021222324252627282930313233343536373839404142434445jintreadBytes(JNIEnv *env, jobject this, jbyteArray bytes,          jint off, jint len, jfieldID fid)&#123;    jint nread;    char stackBuf[BUF_SIZE];    char *buf = NULL;    FD fd;    /*    ......    */    if (len == 0) &#123;        return 0;    &#125; else if (len &gt; BUF_SIZE) &#123;  //从这里也可以看到如果我们读取的数据大于BUF_SIZE(8192)时会在C堆额                                            //外开辟一块空间,否则就使用C栈空间        buf = malloc(len);        if (buf == NULL) &#123;            JNU_ThrowOutOfMemoryError(env, NULL);            return 0;        &#125;    &#125; else &#123;        buf = stackBuf;    &#125;    fd = GET_FD(this, fid);    if (fd == -1) &#123;        JNU_ThrowIOException(env, \"Stream Closed\");        nread = -1;    &#125; else &#123;        nread = IO_Read(fd, buf, len);        if (nread &gt; 0) &#123;            (*env)-&gt;SetByteArrayRegion(env, bytes, off, nread, (jbyte *)buf);        &#125; else if (nread == -1) &#123;            JNU_ThrowIOExceptionWithLastError(env, \"Read error\");        &#125; else &#123; /* EOF */            nread = -1;        &#125;    &#125;    if (buf != stackBuf) &#123;        free(buf);    &#125;    return nread;&#125;\n可以看到真正的读取是用IO_Read进行的,这个函数就是通过系统调用(Linux-&gt;read)读取数据,而Linux的read会先将数据从磁盘读取到内核空间,随后再将数据复制到用户空间。数据读取到用户空间后,接着调用SetByteArrayRegion对buf进行处理123456789101112131415161718JNI_ENTRY(void, \\jni_Set##Result##ArrayRegion(JNIEnv *env, ElementType##Array array, jsize start, \\             jsize len, const ElementType *buf)) \\  JNIWrapper(\"Set\" XSTR(Result) \"ArrayRegion\"); \\  DTRACE_PROBE5(hotspot_jni, Set##Result##ArrayRegion__entry, env, array, start, len, buf);\\  DT_VOID_RETURN_MARK(Set##Result##ArrayRegion); \\  typeArrayOop dst = typeArrayOop(JNIHandles::resolve_non_null(array)); \\  if (start &lt; 0 || len &lt; 0 || ((unsigned int)start + (unsigned int)len &gt; (unsigned int)dst-&gt;length())) &#123; \\    THROW(vmSymbols::java_lang_ArrayIndexOutOfBoundsException()); \\  &#125; else &#123; \\    if (len &gt; 0) &#123; \\      int sc = TypeArrayKlass::cast(dst-&gt;klass())-&gt;log2_element_size(); \\      memcpy((u_char*) dst-&gt;Tag##_at_addr(start), \\             (u_char*) buf, \\             len &lt;&lt; sc);    \\    &#125; \\  &#125; \\JNI_END\n可以看到,首先调用了typeArrayOop方法,这个方法会根据ElementType(在这里就是byte)进行Java堆内的内存分配,然后通过memcpy函数将buf(先前的C堆或C栈)的内容copy到Java堆。  \n\n总结:FileInputstream的数据读取经历了三次copy:磁盘到内核,内核到用户态(这里的用户态可能是C堆也可能是C栈),用户态到Java堆。FileOutputStream的wireBytes方法与readBytes完全相反,Java堆-&gt;用户态,用户态-&gt;内核态,内核态-&gt;disk。  \n\nFiceChannel.read/write第一个核心方法在IOUtil.read123456789101112131415161718192021222324static int read(FileDescriptor var0, ByteBuffer var1, long var2, NativeDispatcher var4) throws IOException &#123;  if (var1.isReadOnly()) &#123;    throw new IllegalArgumentException(\"Read-only buffer\");  &#125; else if (var1 instanceof DirectBuffer) &#123;    return readIntoNativeBuffer(var0, var1, var2, var4);  &#125; else &#123;    ByteBuffer var5 = Util.getTemporaryDirectBuffer(var1.remaining());    int var7;    try &#123;      int var6 = readIntoNativeBuffer(var0, var5, var2, var4);      var5.flip();      if (var6 &gt; 0) &#123;        var1.put(var5);      &#125;      var7 = var6;    &#125; finally &#123;      Util.offerFirstTemporaryDirectBuffer(var5);    &#125;    return var7;  &#125;&#125;\n可以看到不论传入read方法的buffer是不是DirectBuffer,都需要先将数据读取到DirectBuffer中,不同的是,如果传入的buffer不是direct的,那么会先调用getTemporaryDirectBuffer分配一个临时的directbuffer(这个方法还用到了ThreadLocal和以缓存ByteBuffer,但在这里不是重点,所以略过)。紧接着调用readIntoNativeBuffer进行数据读取,这里调用的是pread,与read一样的数据复制过程,随后调用put方法再一次进行数据复制。write相反,不再说明。  \n\n总结:FileChannel的read和write与FileIn/Outputstream的区别在于,可以使用DirectBuffer以避免Java堆-用户空间的内存复制,即使在不使用DirectBuffer的情况下,也可以通过BufferCache加快堆外内存的分配。  \n\nFileChannel.transferTo123456789101112131415161718192021public long transferTo(long var1, long var3, WritableByteChannel var5) throws IOException &#123;  /*  .......  */    long var6 = this.size();    if (var1 &gt; var6) &#123;      return 0L;    &#125; else &#123;      int var8 = (int)Math.min(var3, 2147483647L);      if (var6 - var1 &lt; (long)var8) &#123;        var8 = (int)(var6 - var1);      &#125;      long var9;      if ((var9 = this.transferToDirectly(var1, var8, var5)) &gt;= 0L) &#123;        return var9;      &#125;       //...    &#125;  &#125; &#125;\n这里先来看transferToDirectly方法,这个方法一路跟到native方法1234567891011121314JNIEXPORT jlong JNICALLJava_sun_nio_ch_FileChannelImpl_transferTo0(JNIEnv *env, jobject this,                                            jint srcFD,                                            jlong position, jlong count,                                            jint dstFD)&#123;#if defined(__linux__)    off64_t offset = (off64_t)position;    jlong n = sendfile64(dstFD, srcFD, &amp;offset, (size_t)count);    if (n &lt; 0) &#123;        //...    &#125;    return n;&#125;\n最终调用了sendfile64(支持大文件的sendfile),sendfile函数先将数据从磁盘读取到与srcFD关联内核缓冲区,再拷贝到dstFD相关的内核缓冲区,再写入到disk,这样的调用减少了用户态空间的复制以及用户态到内核态间切换。  \n\n总结:transferTo使用了sendfile减少了用户态数据的复制以及系统调用次数。  \n\nFiles.copycopy函数有四个重载形式  \n\nsrc,dst都为stream,与第一个分析一样,三次拷贝  \nsrc,dst一个为strem,另一个为path,用path构建channel,进行数据读写重点分析src,dst都为path的情况12345678910111213public static Path copy(Path source, Path target, CopyOption... options)    throws IOException&#123;    FileSystemProvider provider = provider(source);    if (provider(target) == provider) &#123;        // same provider        provider.copy(source, target, options);    &#125; else &#123;        // different providers        CopyMoveHelper.copyToForeignTarget(source, target, options);    &#125;    return target;&#125;\n\n\nFileSystemProvider是根据模板文件以及操作系统在build过程中自动生成的(惊了,还有这种操作),在CompileJavaClasses.gmk文件中可以找到,最终的provider是sun/nio/fs/LinuxFileSystemProvider.java(编译后才能生成),在这里只关注,if为true的情况,也就是src和dst的文件系统相同。Java层面最终走到UnixCopyFile.CopyFile方法12345678910111213141516171819202122232425262728293031323334353637private static void copyFile(UnixPath source,                             UnixFileAttributes attrs,                             UnixPath  target,                             Flags flags,                             long addressToPollForCancel)    throws IOException&#123;    int fi = -1;    try &#123;        fi = open(source, O_RDONLY, 0);    &#125; catch (UnixException x) &#123;        x.rethrowAsIOException(source);    &#125;    try &#123;        int fo = -1;        try &#123;            fo = open(target,                       (O_WRONLY |                        O_CREAT |                        O_EXCL),                       attrs.mode());        &#125;         boolean complete = false;        try &#123;            // transfer bytes to target file            try &#123;                transfer(fo, fi, addressToPollForCancel);            &#125;             //...            complete = true;        &#125; finally &#123;           //...        &#125;    &#125; finally &#123;        close(fi);    &#125;&#125;\ntransfer是一个native方法,1234567891011121314151617181920212223242526JNIEXPORT void JNICALLJava_sun_nio_fs_UnixCopyFile_transfer    (JNIEnv* env, jclass this, jint dst, jint src, jlong cancelAddress)&#123;    char buf[8192];    volatile jint* cancel = (jint*)jlong_to_ptr(cancelAddress);    for (;;) &#123;        ssize_t n, pos, len;        RESTARTABLE(read((int)src, &amp;buf, sizeof(buf)), n);        pos = 0;        len = n;        do &#123;            char* bufp = buf;            bufp += pos;            RESTARTABLE(write((int)dst, bufp, len), n);            if (n == -1) &#123;                throwUnixException(env, errno);                return;            &#125;            pos += n;            len -= n;        &#125; while (len &gt; 0);    &#125;&#125;\n\n总结:可以看到虽然方法名叫transfer,但并不同于transferTo使用sendfile实现,而是仍然使用read,write系统调用在用户空间复制数据。  \n\n为什么要复制到JAVA堆?这是因为,不论是read还是write,在进行内存数据读写的时候都需要将内存地址给OS,但由于JVM的GC导致buffer的内存地址可能处于不可预测的变化中,所以需要找到一块不受GC影响的内存,也就是堆外内存。\nDirectByteBuffer&amp;MappedByteBufferDirectByteBuffer就是Java堆外的内存,MapperByteBuffer其实也是一个DirectByteBuffer,也就是JVM中所谓的冰山对象。MapperByteBuffer可以使用FileChannel.map分配。123456789101112131415161718192021222324252627282930313233343536public MappedByteBuffer map(MapMode mode, long position, long size)    throws IOException&#123;    long addr = -1;    int ti = -1;    try&#123;        int pagePosition = (int)(position % allocationGranularity);        long mapPosition = position - pagePosition;        long mapSize = size + pagePosition;        try &#123;            addr = map0(imode, mapPosition, mapSize);        &#125; catch (OutOfMemoryError x) &#123;            // An OutOfMemoryError may indicate that we've exhausted memory            // so force gc and re-attempt map            System.gc();            try &#123;                Thread.sleep(100);            &#125; catch (InterruptedException y) &#123;                Thread.currentThread().interrupt();            &#125;            try &#123;                addr = map0(imode, mapPosition, mapSize);            &#125; catch (OutOfMemoryError y) &#123;                throw new IOException(\"Map failed\", y);            &#125;        &#125;        int isize = (int)size;        Unmapper um = new Unmapper(addr, mapSize, isize, mfd);        if ((!writable) || (imode == MAP_RO)) &#123;            return Util.newMappedByteBufferR(isize,addr + pagePosition,mfd,um);        &#125; else &#123;            return Util.newMappedByteBuffer(isize,addr + pagePosition,mfd,um);        &#125;    &#125; finally &#123;    &#125;&#125;\n首先可以看到,最终是调用了native得到map0方法,并且在OOM时会进行GC并尝试第二次map,最终将其封装为DirectByteBuffer返回(Util.newMapperByteBuffer)。查看native代码12345678910111213141516171819202122232425JNIEXPORT jlong JNICALLJava_sun_nio_ch_FileChannelImpl_map0(JNIEnv *env, jobject this,                                     jint prot, jlong off, jlong len)&#123;    void *mapAddress = 0;    jobject fdo = (*env)-&gt;GetObjectField(env, this, chan_fd);    jint fd = fdval(env, fdo);    int protections = 0;    int flags = 0;    mapAddress = mmap64(        0,                    /* Let OS decide location */        len,                  /* Number of bytes to map */        protections,          /* File permissions */        flags,                /* Changes are shared */        fd,                   /* File descriptor of mapped file */        off);                 /* Offset into file */    if (mapAddress == MAP_FAILED) &#123;        if (errno == ENOMEM) &#123;            JNU_ThrowOutOfMemoryError(env, \"Map failed\");            return IOS_THROWN;        &#125;        return handle(env, -1, \"Map failed\");    &#125;    return ((jlong) (unsigned long) mapAddress);&#125;\n最终落到mmap调用上。要注意的是,由于这两个Buffer是堆外内存,文件的fd由堆外内存持有,所以即使关闭了channel,由于堆外内存仍然持有文件fd,所以可能无法立即成功删除file。  \n参考Java核心技术36讲FileChannel的map","dateCreated":"2019-02-20T19:12:21+08:00","dateModified":"2019-03-01T22:42:18+08:00","datePublished":"2019-02-20T19:12:21+08:00","description":"JavaIO","headline":"JavaIO","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/02/20/JavaIO/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/02/20/JavaIO/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="JavaIO">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="JavaIO">
+<meta property="og:url" content="http://yoursite.com/2019/02/20/JavaIO/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="JavaIO">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-03-01T14:42:18.011Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="JavaIO">
+<meta name="twitter:description" content="JavaIO">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            JavaIO
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-02-20T19:12:21+08:00">
+	
+		    2月 20, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#文件拷贝看JavaIO"><span class="toc-text">文件拷贝看JavaIO</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#FileIn-OutputStream"><span class="toc-text">FileIn/OutputStream</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#FiceChannel-read-write"><span class="toc-text">FiceChannel.read/write</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#FileChannel-transferTo"><span class="toc-text">FileChannel.transferTo</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Files-copy"><span class="toc-text">Files.copy</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#为什么要复制到JAVA堆"><span class="toc-text">为什么要复制到JAVA堆?</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#DirectByteBuffer-amp-MappedByteBuffer"><span class="toc-text">DirectByteBuffer&amp;MappedByteBuffer</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="文件拷贝看JavaIO"><a href="#文件拷贝看JavaIO" class="headerlink" title="文件拷贝看JavaIO"></a>文件拷贝看JavaIO</h1><h2 id="FileIn-OutputStream"><a href="#FileIn-OutputStream" class="headerlink" title="FileIn/OutputStream"></a>FileIn/OutputStream</h2><p>使用FileInputStream的readBytes方法读取数据会调用native的readBytes方法<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br></pre></td><td class="code"><pre><span class="line">jint</span><br><span class="line">readBytes(JNIEnv *env, jobject <span class="keyword">this</span>, jbyteArray bytes,</span><br><span class="line">          jint off, jint len, jfieldID fid)</span><br><span class="line">&#123;</span><br><span class="line">    jint nread;</span><br><span class="line">    <span class="keyword">char</span> stackBuf[BUF_SIZE];</span><br><span class="line">    <span class="keyword">char</span> *buf = <span class="literal">NULL</span>;</span><br><span class="line">    FD fd;</span><br><span class="line">    <span class="comment">/*</span></span><br><span class="line"><span class="comment">    ......</span></span><br><span class="line"><span class="comment">    */</span></span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (len == <span class="number">0</span>) &#123;</span><br><span class="line">        <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">    &#125; <span class="keyword">else</span> <span class="keyword">if</span> (len &gt; BUF_SIZE) &#123;  <span class="comment">//从这里也可以看到如果我们读取的数据大于BUF_SIZE(8192)时会在C堆额          </span></span><br><span class="line">                                  <span class="comment">//外开辟一块空间,否则就使用C栈空间</span></span><br><span class="line">        buf = <span class="built_in">malloc</span>(len);</span><br><span class="line">        <span class="keyword">if</span> (buf == <span class="literal">NULL</span>) &#123;</span><br><span class="line">            JNU_ThrowOutOfMemoryError(env, <span class="literal">NULL</span>);</span><br><span class="line">            <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        buf = stackBuf;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    fd = GET_FD(<span class="keyword">this</span>, fid);</span><br><span class="line">    <span class="keyword">if</span> (fd == <span class="number">-1</span>) &#123;</span><br><span class="line">        JNU_ThrowIOException(env, <span class="string">"Stream Closed"</span>);</span><br><span class="line">        nread = <span class="number">-1</span>;</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        nread = IO_Read(fd, buf, len);</span><br><span class="line">        <span class="keyword">if</span> (nread &gt; <span class="number">0</span>) &#123;</span><br><span class="line">            (*env)-&gt;SetByteArrayRegion(env, bytes, off, nread, (jbyte *)buf);</span><br><span class="line">        &#125; <span class="keyword">else</span> <span class="keyword">if</span> (nread == <span class="number">-1</span>) &#123;</span><br><span class="line">            JNU_ThrowIOExceptionWithLastError(env, <span class="string">"Read error"</span>);</span><br><span class="line">        &#125; <span class="keyword">else</span> &#123; <span class="comment">/* EOF */</span></span><br><span class="line">            nread = <span class="number">-1</span>;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (buf != stackBuf) &#123;</span><br><span class="line">        <span class="built_in">free</span>(buf);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> nread;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>可以看到真正的读取是用IO_Read进行的,这个函数就是通过系统调用(Linux-&gt;read)读取数据,而Linux的read会先将数据从磁盘读取到内核空间,随后再将数据复制到用户空间。<br>数据读取到用户空间后,接着调用SetByteArrayRegion对buf进行处理<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line">JNI_ENTRY(<span class="keyword">void</span>, \</span><br><span class="line">jni_Set##Result##ArrayRegion(JNIEnv *env, ElementType##Array <span class="built_in">array</span>, jsize start, \</span><br><span class="line">             jsize len, <span class="keyword">const</span> ElementType *buf)) \</span><br><span class="line">  JNIWrapper(<span class="string">"Set"</span> XSTR(Result) <span class="string">"ArrayRegion"</span>); \</span><br><span class="line">  DTRACE_PROBE5(hotspot_jni, Set##Result##ArrayRegion__entry, env, <span class="built_in">array</span>, start, len, buf);\</span><br><span class="line">  DT_VOID_RETURN_MARK(Set##Result##ArrayRegion); \</span><br><span class="line">  typeArrayOop dst = typeArrayOop(JNIHandles::resolve_non_null(<span class="built_in">array</span>)); \</span><br><span class="line">  <span class="keyword">if</span> (start &lt; <span class="number">0</span> || len &lt; <span class="number">0</span> || ((<span class="keyword">unsigned</span> <span class="keyword">int</span>)start + (<span class="keyword">unsigned</span> <span class="keyword">int</span>)len &gt; (<span class="keyword">unsigned</span> <span class="keyword">int</span>)dst-&gt;length())) &#123; \</span><br><span class="line">    THROW(vmSymbols::java_lang_ArrayIndexOutOfBoundsException()); \</span><br><span class="line">  &#125; <span class="keyword">else</span> &#123; \</span><br><span class="line">    <span class="keyword">if</span> (len &gt; <span class="number">0</span>) &#123; \</span><br><span class="line">      <span class="keyword">int</span> sc = TypeArrayKlass::cast(dst-&gt;klass())-&gt;log2_element_size(); \</span><br><span class="line">      <span class="built_in">memcpy</span>((u_char*) dst-&gt;Tag##_at_addr(start), \</span><br><span class="line">             (u_char*) buf, \</span><br><span class="line">             len &lt;&lt; sc);    \</span><br><span class="line">    &#125; \</span><br><span class="line">  &#125; \</span><br><span class="line">JNI_END</span><br></pre></td></tr></table></figure></p>
+<p>可以看到,首先调用了typeArrayOop方法,这个方法会根据ElementType(在这里就是byte)进行Java堆内的内存分配,然后通过memcpy函数将buf(先前的C堆或C栈)的内容copy到Java堆。  </p>
+<ul>
+<li>总结:<br>FileInputstream的数据读取经历了三次copy:磁盘到内核,内核到用户态(这里的用户态可能是C堆也可能是C栈),用户态到Java堆。<br>FileOutputStream的wireBytes方法与readBytes完全相反,Java堆-&gt;用户态,用户态-&gt;内核态,内核态-&gt;disk。  </li>
+</ul>
+<h2 id="FiceChannel-read-write"><a href="#FiceChannel-read-write" class="headerlink" title="FiceChannel.read/write"></a>FiceChannel.read/write</h2><p>第一个核心方法在IOUtil.read<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">static</span> <span class="keyword">int</span> <span class="title">read</span><span class="params">(FileDescriptor var0, ByteBuffer var1, <span class="keyword">long</span> var2, NativeDispatcher var4)</span> <span class="keyword">throws</span> IOException </span>&#123;</span><br><span class="line">  <span class="keyword">if</span> (var1.isReadOnly()) &#123;</span><br><span class="line">    <span class="keyword">throw</span> <span class="keyword">new</span> IllegalArgumentException(<span class="string">"Read-only buffer"</span>);</span><br><span class="line">  &#125; <span class="keyword">else</span> <span class="keyword">if</span> (var1 <span class="keyword">instanceof</span> DirectBuffer) &#123;</span><br><span class="line">    <span class="keyword">return</span> readIntoNativeBuffer(var0, var1, var2, var4);</span><br><span class="line">  &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">    ByteBuffer var5 = Util.getTemporaryDirectBuffer(var1.remaining());</span><br><span class="line"></span><br><span class="line">    <span class="keyword">int</span> var7;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">      <span class="keyword">int</span> var6 = readIntoNativeBuffer(var0, var5, var2, var4);</span><br><span class="line">      var5.flip();</span><br><span class="line">      <span class="keyword">if</span> (var6 &gt; <span class="number">0</span>) &#123;</span><br><span class="line">        var1.put(var5);</span><br><span class="line">      &#125;</span><br><span class="line"></span><br><span class="line">      var7 = var6;</span><br><span class="line">    &#125; <span class="keyword">finally</span> &#123;</span><br><span class="line">      Util.offerFirstTemporaryDirectBuffer(var5);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">return</span> var7;</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>可以看到不论传入read方法的buffer是不是DirectBuffer,都需要先将数据读取到DirectBuffer中,不同的是,如果传入的buffer不是direct的,那么会先调用getTemporaryDirectBuffer分配一个临时的directbuffer(这个方法还用到了ThreadLocal和以缓存ByteBuffer,但在这里不是重点,所以略过)。<br>紧接着调用readIntoNativeBuffer进行数据读取,这里调用的是pread,与read一样的数据复制过程,随后调用put方法再一次进行数据复制。write相反,不再说明。  </p>
+<ul>
+<li>总结:<br>FileChannel的read和write与FileIn/Outputstream的区别在于,可以使用DirectBuffer以避免Java堆-用户空间的内存复制,即使在不使用DirectBuffer的情况下,也可以通过BufferCache加快堆外内存的分配。  </li>
+</ul>
+<h2 id="FileChannel-transferTo"><a href="#FileChannel-transferTo" class="headerlink" title="FileChannel.transferTo"></a>FileChannel.transferTo</h2><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">long</span> <span class="title">transferTo</span><span class="params">(<span class="keyword">long</span> var1, <span class="keyword">long</span> var3, WritableByteChannel var5)</span> <span class="keyword">throws</span> IOException </span>&#123;</span><br><span class="line">  <span class="comment">/*</span></span><br><span class="line"><span class="comment">  .......</span></span><br><span class="line"><span class="comment">  */</span></span><br><span class="line">    <span class="keyword">long</span> var6 = <span class="keyword">this</span>.size();</span><br><span class="line">    <span class="keyword">if</span> (var1 &gt; var6) &#123;</span><br><span class="line">      <span class="keyword">return</span> <span class="number">0L</span>;</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">      <span class="keyword">int</span> var8 = (<span class="keyword">int</span>)Math.min(var3, <span class="number">2147483647L</span>);</span><br><span class="line">      <span class="keyword">if</span> (var6 - var1 &lt; (<span class="keyword">long</span>)var8) &#123;</span><br><span class="line">        var8 = (<span class="keyword">int</span>)(var6 - var1);</span><br><span class="line">      &#125;</span><br><span class="line"></span><br><span class="line">      <span class="keyword">long</span> var9;</span><br><span class="line">      <span class="keyword">if</span> ((var9 = <span class="keyword">this</span>.transferToDirectly(var1, var8, var5)) &gt;= <span class="number">0L</span>) &#123;</span><br><span class="line">        <span class="keyword">return</span> var9;</span><br><span class="line">      &#125; </span><br><span class="line">      <span class="comment">//...</span></span><br><span class="line">    &#125;</span><br><span class="line">  &#125; </span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>这里先来看transferToDirectly方法,这个方法一路跟到native方法<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line">JNIEXPORT jlong JNICALL</span><br><span class="line">Java_sun_nio_ch_FileChannelImpl_transferTo0(JNIEnv *env, jobject <span class="keyword">this</span>,</span><br><span class="line">                                            jint srcFD,</span><br><span class="line">                                            jlong position, jlong count,</span><br><span class="line">                                            jint dstFD)</span><br><span class="line">&#123;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">if</span> defined(__linux__)</span></span><br><span class="line">    <span class="keyword">off64_t</span> offset = (<span class="keyword">off64_t</span>)position;</span><br><span class="line">    jlong n = sendfile64(dstFD, srcFD, &amp;offset, (<span class="keyword">size_t</span>)count);</span><br><span class="line">    <span class="keyword">if</span> (n &lt; <span class="number">0</span>) &#123;</span><br><span class="line">        <span class="comment">//...</span></span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> n;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>最终调用了sendfile64(支持大文件的sendfile),sendfile函数先将数据从磁盘读取到与srcFD关联内核缓冲区,再拷贝到dstFD相关的内核缓冲区,再写入到disk,这样的调用减少了用户态空间的复制以及用户态到内核态间切换。  </p>
+<ul>
+<li>总结:<br>transferTo使用了sendfile减少了用户态数据的复制以及系统调用次数。  </li>
+</ul>
+<h2 id="Files-copy"><a href="#Files-copy" class="headerlink" title="Files.copy"></a>Files.copy</h2><p>copy函数有四个重载形式  </p>
+<ul>
+<li>src,dst都为stream,与第一个分析一样,三次拷贝  </li>
+<li>src,dst一个为strem,另一个为path,用path构建channel,进行数据读写<br>重点分析src,dst都为path的情况<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> Path <span class="title">copy</span><span class="params">(Path source, Path target, CopyOption... options)</span></span></span><br><span class="line"><span class="function">    <span class="keyword">throws</span> IOException</span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">    FileSystemProvider provider = provider(source);</span><br><span class="line">    <span class="keyword">if</span> (provider(target) == provider) &#123;</span><br><span class="line">        <span class="comment">// same provider</span></span><br><span class="line">        provider.copy(source, target, options);</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        <span class="comment">// different providers</span></span><br><span class="line">        CopyMoveHelper.copyToForeignTarget(source, target, options);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> target;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+</li>
+</ul>
+<p>FileSystemProvider是根据模板文件以及操作系统在build过程中自动生成的(惊了,还有这种操作),在CompileJavaClasses.gmk文件中可以找到,最终的provider是sun/nio/fs/LinuxFileSystemProvider.java(编译后才能生成),在这里只关注,if为true的情况,也就是src和dst的文件系统相同。<br>Java层面最终走到UnixCopyFile.CopyFile方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">copyFile</span><span class="params">(UnixPath source,</span></span></span><br><span class="line"><span class="function"><span class="params">                             UnixFileAttributes attrs,</span></span></span><br><span class="line"><span class="function"><span class="params">                             UnixPath  target,</span></span></span><br><span class="line"><span class="function"><span class="params">                             Flags flags,</span></span></span><br><span class="line"><span class="function"><span class="params">                             <span class="keyword">long</span> addressToPollForCancel)</span></span></span><br><span class="line"><span class="function">    <span class="keyword">throws</span> IOException</span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">    <span class="keyword">int</span> fi = -<span class="number">1</span>;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        fi = open(source, O_RDONLY, <span class="number">0</span>);</span><br><span class="line">    &#125; <span class="keyword">catch</span> (UnixException x) &#123;</span><br><span class="line">        x.rethrowAsIOException(source);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        <span class="keyword">int</span> fo = -<span class="number">1</span>;</span><br><span class="line">        <span class="keyword">try</span> &#123;</span><br><span class="line">            fo = open(target,</span><br><span class="line">                       (O_WRONLY |</span><br><span class="line">                        O_CREAT |</span><br><span class="line">                        O_EXCL),</span><br><span class="line">                       attrs.mode());</span><br><span class="line">        &#125; </span><br><span class="line">        <span class="keyword">boolean</span> complete = <span class="keyword">false</span>;</span><br><span class="line">        <span class="keyword">try</span> &#123;</span><br><span class="line">            <span class="comment">// transfer bytes to target file</span></span><br><span class="line">            <span class="keyword">try</span> &#123;</span><br><span class="line">                transfer(fo, fi, addressToPollForCancel);</span><br><span class="line">            &#125; </span><br><span class="line">            <span class="comment">//...</span></span><br><span class="line">            complete = <span class="keyword">true</span>;</span><br><span class="line">        &#125; <span class="keyword">finally</span> &#123;</span><br><span class="line">           <span class="comment">//...</span></span><br><span class="line">        &#125;</span><br><span class="line">    &#125; <span class="keyword">finally</span> &#123;</span><br><span class="line">        close(fi);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>transfer是一个native方法,<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">JNIEXPORT <span class="keyword">void</span> JNICALL</span><br><span class="line">Java_sun_nio_fs_UnixCopyFile_transfer</span><br><span class="line">    (JNIEnv* env, jclass <span class="keyword">this</span>, jint dst, jint src, jlong cancelAddress)</span><br><span class="line">&#123;</span><br><span class="line">    <span class="keyword">char</span> buf[<span class="number">8192</span>];</span><br><span class="line">    <span class="keyword">volatile</span> jint* cancel = (jint*)jlong_to_ptr(cancelAddress);</span><br><span class="line"></span><br><span class="line">    <span class="keyword">for</span> (;;) &#123;</span><br><span class="line">        <span class="keyword">ssize_t</span> n, pos, len;</span><br><span class="line">        RESTARTABLE(read((<span class="keyword">int</span>)src, &amp;buf, <span class="keyword">sizeof</span>(buf)), n);</span><br><span class="line"></span><br><span class="line">        pos = <span class="number">0</span>;</span><br><span class="line">        len = n;</span><br><span class="line">        <span class="keyword">do</span> &#123;</span><br><span class="line">            <span class="keyword">char</span>* bufp = buf;</span><br><span class="line">            bufp += pos;</span><br><span class="line">            RESTARTABLE(write((<span class="keyword">int</span>)dst, bufp, len), n);</span><br><span class="line">            <span class="keyword">if</span> (n == <span class="number">-1</span>) &#123;</span><br><span class="line">                throwUnixException(env, errno);</span><br><span class="line">                <span class="keyword">return</span>;</span><br><span class="line">            &#125;</span><br><span class="line">            pos += n;</span><br><span class="line">            len -= n;</span><br><span class="line">        &#125; <span class="keyword">while</span> (len &gt; <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<ul>
+<li>总结:<br>可以看到虽然方法名叫transfer,但并不同于transferTo使用sendfile实现,而是仍然使用read,write系统调用在用户空间复制数据。  </li>
+</ul>
+<h2 id="为什么要复制到JAVA堆"><a href="#为什么要复制到JAVA堆" class="headerlink" title="为什么要复制到JAVA堆?"></a>为什么要复制到JAVA堆?</h2><p>这是因为,不论是read还是write,在进行内存数据读写的时候都需要将内存地址给OS,但由于JVM的GC导致buffer的内存地址可能处于不可预测的变化中,所以需要找到一块不受GC影响的内存,也就是堆外内存。</p>
+<h2 id="DirectByteBuffer-amp-MappedByteBuffer"><a href="#DirectByteBuffer-amp-MappedByteBuffer" class="headerlink" title="DirectByteBuffer&amp;MappedByteBuffer"></a>DirectByteBuffer&amp;MappedByteBuffer</h2><p>DirectByteBuffer就是Java堆外的内存,MapperByteBuffer其实也是一个DirectByteBuffer,也就是JVM中所谓的冰山对象。<br>MapperByteBuffer可以使用FileChannel.map分配。<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> MappedByteBuffer <span class="title">map</span><span class="params">(MapMode mode, <span class="keyword">long</span> position, <span class="keyword">long</span> size)</span></span></span><br><span class="line"><span class="function">    <span class="keyword">throws</span> IOException</span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">    <span class="keyword">long</span> addr = -<span class="number">1</span>;</span><br><span class="line">    <span class="keyword">int</span> ti = -<span class="number">1</span>;</span><br><span class="line">    <span class="keyword">try</span>&#123;</span><br><span class="line">        <span class="keyword">int</span> pagePosition = (<span class="keyword">int</span>)(position % allocationGranularity);</span><br><span class="line">        <span class="keyword">long</span> mapPosition = position - pagePosition;</span><br><span class="line">        <span class="keyword">long</span> mapSize = size + pagePosition;</span><br><span class="line">        <span class="keyword">try</span> &#123;</span><br><span class="line">            addr = map0(imode, mapPosition, mapSize);</span><br><span class="line">        &#125; <span class="keyword">catch</span> (OutOfMemoryError x) &#123;</span><br><span class="line">            <span class="comment">// An OutOfMemoryError may indicate that we've exhausted memory</span></span><br><span class="line">            <span class="comment">// so force gc and re-attempt map</span></span><br><span class="line">            System.gc();</span><br><span class="line">            <span class="keyword">try</span> &#123;</span><br><span class="line">                Thread.sleep(<span class="number">100</span>);</span><br><span class="line">            &#125; <span class="keyword">catch</span> (InterruptedException y) &#123;</span><br><span class="line">                Thread.currentThread().interrupt();</span><br><span class="line">            &#125;</span><br><span class="line">            <span class="keyword">try</span> &#123;</span><br><span class="line">                addr = map0(imode, mapPosition, mapSize);</span><br><span class="line">            &#125; <span class="keyword">catch</span> (OutOfMemoryError y) &#123;</span><br><span class="line">                <span class="keyword">throw</span> <span class="keyword">new</span> IOException(<span class="string">"Map failed"</span>, y);</span><br><span class="line">            &#125;</span><br><span class="line">        &#125;</span><br><span class="line">        <span class="keyword">int</span> isize = (<span class="keyword">int</span>)size;</span><br><span class="line">        Unmapper um = <span class="keyword">new</span> Unmapper(addr, mapSize, isize, mfd);</span><br><span class="line">        <span class="keyword">if</span> ((!writable) || (imode == MAP_RO)) &#123;</span><br><span class="line">            <span class="keyword">return</span> Util.newMappedByteBufferR(isize,addr + pagePosition,mfd,um);</span><br><span class="line">        &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">            <span class="keyword">return</span> Util.newMappedByteBuffer(isize,addr + pagePosition,mfd,um);</span><br><span class="line">        &#125;</span><br><span class="line">    &#125; <span class="keyword">finally</span> &#123;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>首先可以看到,最终是调用了native得到map0方法,并且在OOM时会进行GC并尝试第二次map,最终将其封装为DirectByteBuffer返回(Util.newMapperByteBuffer)。<br>查看native代码<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line">JNIEXPORT jlong JNICALL</span><br><span class="line">Java_sun_nio_ch_FileChannelImpl_map0(JNIEnv *env, jobject <span class="keyword">this</span>,</span><br><span class="line">                                     jint prot, jlong off, jlong len)</span><br><span class="line">&#123;</span><br><span class="line">    <span class="keyword">void</span> *mapAddress = <span class="number">0</span>;</span><br><span class="line">    jobject fdo = (*env)-&gt;GetObjectField(env, <span class="keyword">this</span>, chan_fd);</span><br><span class="line">    jint fd = fdval(env, fdo);</span><br><span class="line">    <span class="keyword">int</span> protections = <span class="number">0</span>;</span><br><span class="line">    <span class="keyword">int</span> flags = <span class="number">0</span>;</span><br><span class="line">    mapAddress = mmap64(</span><br><span class="line">        <span class="number">0</span>,                    <span class="comment">/* Let OS decide location */</span></span><br><span class="line">        len,                  <span class="comment">/* Number of bytes to map */</span></span><br><span class="line">        protections,          <span class="comment">/* File permissions */</span></span><br><span class="line">        flags,                <span class="comment">/* Changes are shared */</span></span><br><span class="line">        fd,                   <span class="comment">/* File descriptor of mapped file */</span></span><br><span class="line">        off);                 <span class="comment">/* Offset into file */</span></span><br><span class="line">    <span class="keyword">if</span> (mapAddress == MAP_FAILED) &#123;</span><br><span class="line">        <span class="keyword">if</span> (errno == ENOMEM) &#123;</span><br><span class="line">            JNU_ThrowOutOfMemoryError(env, <span class="string">"Map failed"</span>);</span><br><span class="line">            <span class="keyword">return</span> IOS_THROWN;</span><br><span class="line">        &#125;</span><br><span class="line">        <span class="keyword">return</span> handle(env, -<span class="number">1</span>, <span class="string">"Map failed"</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> ((jlong) (unsigned <span class="keyword">long</span>) mapAddress);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>最终落到mmap调用上。<br>要注意的是,由于这两个Buffer是堆外内存,文件的fd由堆外内存持有,所以即使关闭了channel,由于堆外内存仍然持有文件fd,所以可能无法立即成功删除file。  </p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://time.geekbang.org/column/82" target="_blank" rel="noopener">Java核心技术36讲</a><br><a href="https://zhuanlan.zhihu.com/p/27698585" target="_blank" rel="noopener">FileChannel的map</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/02/27/Oop-Klass/" data-tooltip="Oop-Klass(一)" aria-label="上一篇: Oop-Klass(一)">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/12/06/Linux学习笔记/" data-tooltip="Linux学习笔记" aria-label="下一篇: Linux学习笔记">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/02/27/Oop-Klass/" data-tooltip="Oop-Klass(一)" aria-label="上一篇: Oop-Klass(一)">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/12/06/Linux学习笔记/" data-tooltip="Linux学习笔记" aria-label="下一篇: Linux学习笔记">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

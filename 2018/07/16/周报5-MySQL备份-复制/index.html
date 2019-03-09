@@ -1,0 +1,358 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>周报5 MySQL备份/复制 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\nLSN/checkpoint由于缓冲池的存在，对于数据的更改可能并未立刻同步到磁盘上，通过checkpoint会将脏页刷回磁盘，如果mysql或主机宕机，需要重做redo日志来更新数据，innodb中的每一个页都有一个LSN，redo日志也有LSN，checkpoint也有LSN，进行redo日志重做时，只重做redo.LSN＞checkpoint.LSN的部分。\nbinlogbinlog记录了所有改变数据库的信息，是一系列”事件”的集合，属于server层日志。通过binlog可以实现基于时间点和基于位置的恢复以及主从复制。其有三种记录形式。statement:对于一般的语句采用statement模式，记录日质量小。row:对于特殊的语句(如使用NOW()等不确定函数的语句)采用row模式记录下每个被改变行的具体信息。mixed:以上两种的混合。  \ninnodb的崩溃恢复数据库启动时，根据checkpoint.LSN解析相应的redo日志，根据redo日志 加载相应的数据页，进行redo日志的重做。开启binlog的情况下，binlog先于redo日志落盘，可能出现从库数据比主库多，接下来需要根据binlog进行恢复。打开最后一个binlog文件，读取所有的XID，构成一个XID列表；根据undo段信息，构成一个未提交事务列表，根据undo段的XID是否在binlog中来决定对事务进行回滚或提交。\nbinlog/redo log组提交多个事务并发提交时，分为三个阶段Flush Stage:将所有线程(事务)的binlog写入缓存。Sync Stage:调用fsync(根据sync_log的值，该值表示的是事务队列的组数)持久化binlog。Commit Stage:持久化redo log。  \n主从复制复制主从复制基于binlog，slave通过一个具有复制权限的账号连接到master上，master生成一个dump线程，读取binlog并发送给slave，slave接收binlog通过IO线程写到自己的relay log中，再通过sql线程读取事件并执行从而应用更新。5.7后mysql支持并行复制。master为每个事务分配一个last_committed和sequence_number，sequence_number递增，同一组提交的事务的last_committed值一样，取自上一组事务的sequence_number的最大值，同组提交的事务证明没有资源竞争，可以并行回放。同时提供了binlog_group_commit_sync_delay、binlog_group_commit_sync_no_delay_count两个参数可以堆积事务，提高并行度。slave端取出一个事件，查看其last_committed和sequence_number，判断其last_committed是不是大于当前已经执行的sequence_number的最小值，如果大于说明上一个事务组的事务没执行完，等待；如果小于等于，则可以并行回放。半同步复制对于一Master，多slave的情况，开启版同步复制后，master至少要收到一个从库的ACK(从库将事件写入relay log)才提交事务并向客户端返回commit ok，如果超时没有收到ACK，则退化为异步复制。强同步复制需要收到所有slave的ACK才能commit。\nGTID全局事务标识符，由服务器的UUID和事务ID共同确定，使用GTID在发生主备切换的情况下，slave可以自动在新master上找到正确的复制位置而不再需要手动指定position\n主从搭建遇到的问题1.主从服务器的GTID_MODE必须设置一样，当开启GTID_MODE时，必须设置ENFORCE_GTID_CONSISTENCY=ON。如果要保证从库中事务的提交顺序和relay日志顺序一样，要开启slave_preserve_commit_order同时设置log_bin和log_slave_updates。  \n2.开启GTID后，新建slave时，若使用xtrabackup备份master，在slave还原，需手动reset master，set global_gtid_purged=(xtrabackup_info中读取)。若使用mysqldump/mysqlpump则不用手动设置mysqldump/mysqlpump在对master进行备份时包含有相应的set语句，直接恢复即可。3.若开启了GTID，binlog中某个事件之前都有”SET @@SESSION.GTID_NEXT=下一个要执行的GTID”这样的语句但是这些GTID已经存在于数据库的Executed_Gtid_Set中,所以在对binlog中的事件进行重做时,所有的事件都会被忽略，出现”不报错，数据无任何变化”的现象,需要加上参数–skip-gtids=true(此参数在重做事件时会过滤掉set GTID语句)。  \n备份工具mysqldump逻辑备份工具,由于innodb的MVCC，可以通过加”single-transaction”参数将备份过程当做一个事务，达到数据一致性和热备。  \nmysqlpump逻辑备份工具，支持基于表的并行导出。其在还原数据时先插入数据再插入索引，加快还原速度。    \nmydumper&amp;myloader逻辑备份工具，支持行级多线程备份，还原时支持多线程还原。\nxtrabackup物理备份工具，支持增量备份由于备份redo日志，所以在恢复的时候要先应用redo日志到数据中，然后再进行备份。xtrabackup同样支持并行备份，另外还支持将备份数据以流的形式输出到远程主机上。xtrabackup在拷贝redo日志前会刷新redo日志到磁盘，因为mysql先写binlog再刷redo日志，但xtrabackup并不拷贝binlog，如果不主动将redo日志刷到磁盘，恢复的时候可能会丢失事务。 \n参考淘宝数据库内核月报高性能MySQL高可用MySQL（第2版）二进制日志解析InnoDB故障恢复流程","dateCreated":"2018-07-16T19:28:47+08:00","dateModified":"2018-08-09T13:35:42+08:00","datePublished":"2018-07-16T19:28:47+08:00","description":"MySQL备份基础","headline":"周报5 MySQL备份/复制","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/07/16/周报5-MySQL备份-复制/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/07/16/周报5-MySQL备份-复制/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png"}</script>
+    <meta name="description" content="MySQL备份基础">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="周报5 MySQL备份&#x2F;复制">
+<meta property="og:url" content="http://yoursite.com/2018/07/16/周报5-MySQL备份-复制/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="MySQL备份基础">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly5%2Fmysqlpump.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly5%2Fxtrabackup.png">
+<meta property="og:updated_time" content="2018-08-09T05:35:42.761Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="周报5 MySQL备份&#x2F;复制">
+<meta name="twitter:description" content="MySQL备份基础">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly5%2Fmysqlpump.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            周报5 MySQL备份/复制
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-07-16T19:28:47+08:00">
+	
+		    7月 16, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#LSN-checkpoint"><span class="toc-text">LSN/checkpoint</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#binlog"><span class="toc-text">binlog</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#innodb的崩溃恢复"><span class="toc-text">innodb的崩溃恢复</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#binlog-redo-log组提交"><span class="toc-text">binlog/redo log组提交</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#主从复制"><span class="toc-text">主从复制</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#复制"><span class="toc-text">复制</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#GTID"><span class="toc-text">GTID</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#主从搭建遇到的问题"><span class="toc-text">主从搭建遇到的问题</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#备份工具"><span class="toc-text">备份工具</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#mysqldump"><span class="toc-text">mysqldump</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#mysqlpump"><span class="toc-text">mysqlpump</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#mydumper-amp-myloader"><span class="toc-text">mydumper&amp;myloader</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#xtrabackup"><span class="toc-text">xtrabackup</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="LSN-checkpoint"><a href="#LSN-checkpoint" class="headerlink" title="LSN/checkpoint"></a>LSN/checkpoint</h1><p>由于缓冲池的存在，对于数据的更改可能并未立刻同步到磁盘上，通过checkpoint会将脏页刷回磁盘，如果mysql或主机宕机，需要重做redo日志来更新数据，innodb中的每一个页都有一个LSN，redo日志也有LSN，checkpoint也有LSN，进行redo日志重做时，只重做redo.LSN＞checkpoint.LSN的部分。</p>
+<h2 id="binlog"><a href="#binlog" class="headerlink" title="binlog"></a>binlog</h2><p>binlog记录了所有改变数据库的信息，是一系列”事件”的集合，属于server层日志。通过binlog可以实现基于时间点和基于位置的恢复以及主从复制。<br>其有三种记录形式。<br>statement:对于一般的语句采用statement模式，记录日质量小。<br>row:对于特殊的语句(如使用NOW()等不确定函数的语句)采用row模式记录下每个被改变行的具体信息。<br>mixed:以上两种的混合。  </p>
+<h1 id="innodb的崩溃恢复"><a href="#innodb的崩溃恢复" class="headerlink" title="innodb的崩溃恢复"></a>innodb的崩溃恢复</h1><p>数据库启动时，根据checkpoint.LSN解析相应的redo日志，根据redo日志 加载相应的数据页，进行redo日志的重做。<br>开启binlog的情况下，binlog先于redo日志落盘，可能出现从库数据比主库多，接下来需要根据binlog进行恢复。<br>打开最后一个binlog文件，读取所有的XID，构成一个XID列表；根据undo段信息，构成一个未提交事务列表，根据undo段的XID是否在binlog中来决定对事务进行回滚或提交。</p>
+<h1 id="binlog-redo-log组提交"><a href="#binlog-redo-log组提交" class="headerlink" title="binlog/redo log组提交"></a>binlog/redo log组提交</h1><p>多个事务并发提交时，分为三个阶段<br>Flush Stage:将所有线程(事务)的binlog写入缓存。<br>Sync Stage:调用fsync(根据sync_log的值，该值表示的是事务队列的组数)持久化binlog。<br>Commit Stage:持久化redo log。  </p>
+<h1 id="主从复制"><a href="#主从复制" class="headerlink" title="主从复制"></a>主从复制</h1><h2 id="复制"><a href="#复制" class="headerlink" title="复制"></a>复制</h2><p>主从复制基于binlog，slave通过一个具有复制权限的账号连接到master上，master生成一个dump线程，读取binlog并发送给slave，slave接收binlog通过IO线程写到自己的relay log中，再通过sql线程读取事件并执行从而应用更新。<br>5.7后mysql支持并行复制。<br>master为每个事务分配一个last_committed和sequence_number，sequence_number递增，同一组提交的事务的last_committed值一样，取自上一组事务的sequence_number的最大值，同组提交的事务证明没有资源竞争，可以并行回放。同时提供了binlog_group_commit_sync_delay、binlog_group_commit_sync_no_delay_count两个参数可以堆积事务，提高并行度。<br>slave端取出一个事件，查看其last_committed和sequence_number，判断其last_committed是不是大于当前已经执行的sequence_number的最小值，如果大于说明上一个事务组的事务没执行完，等待；如果小于等于，则可以并行回放。<br>半同步复制<br>对于一Master，多slave的情况，开启版同步复制后，master至少要收到一个从库的ACK(从库将事件写入relay log)才提交事务并向客户端返回commit ok，如果超时没有收到ACK，则退化为异步复制。<br>强同步复制<br>需要收到所有slave的ACK才能commit。</p>
+<h2 id="GTID"><a href="#GTID" class="headerlink" title="GTID"></a>GTID</h2><p>全局事务标识符，由服务器的UUID和事务ID共同确定，使用GTID在发生主备切换的情况下，slave可以自动在新master上找到正确的复制位置而不再需要手动指定position</p>
+<h2 id="主从搭建遇到的问题"><a href="#主从搭建遇到的问题" class="headerlink" title="主从搭建遇到的问题"></a>主从搭建遇到的问题</h2><p>1.主从服务器的GTID_MODE必须设置一样，当开启GTID_MODE时，必须设置ENFORCE_GTID_CONSISTENCY=ON。<br>如果要保证从库中事务的提交顺序和relay日志顺序一样，要开启slave_preserve_commit_order同时设置log_bin和log_slave_updates。  </p>
+<p>2.开启GTID后，新建slave时，若使用xtrabackup备份master，在slave还原，需手动reset master，set global_gtid_purged=(xtrabackup_info中读取)。<br>若使用mysqldump/mysqlpump则不用手动设置<br>mysqldump/mysqlpump在对master进行备份时包含有相应的set语句，直接恢复即可。<br>3.若开启了GTID，binlog中某个事件之前都有”SET @@SESSION.GTID_NEXT=下一个要执行的GTID”这样的语句但是这些GTID已经存在于数据库的Executed_Gtid_Set中,所以在对binlog中的事件进行重做时,所有的事件都会被忽略，出现”不报错，数据无任何变化”的现象,需要加上参数–skip-gtids=true(此参数在重做事件时会过滤掉set GTID语句)。  </p>
+<h1 id="备份工具"><a href="#备份工具" class="headerlink" title="备份工具"></a>备份工具</h1><h2 id="mysqldump"><a href="#mysqldump" class="headerlink" title="mysqldump"></a>mysqldump</h2><p>逻辑备份工具,由于innodb的MVCC，可以通过加”single-transaction”参数将备份过程当做一个事务，达到数据一致性和热备。  </p>
+<h2 id="mysqlpump"><a href="#mysqlpump" class="headerlink" title="mysqlpump"></a>mysqlpump</h2><p>逻辑备份工具，支持基于表的并行导出。其在还原数据时先插入数据再插入索引，加快还原速度。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly5%2Fmysqlpump.png" alt>    </p>
+<h2 id="mydumper-amp-myloader"><a href="#mydumper-amp-myloader" class="headerlink" title="mydumper&amp;myloader"></a>mydumper&amp;myloader</h2><p>逻辑备份工具，支持行级多线程备份，还原时支持多线程还原。</p>
+<h2 id="xtrabackup"><a href="#xtrabackup" class="headerlink" title="xtrabackup"></a>xtrabackup</h2><p>物理备份工具，支持增量备份<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly5%2Fxtrabackup.png" alt><br>由于备份redo日志，所以在恢复的时候要先应用redo日志到数据中，然后再进行备份。<br>xtrabackup同样支持并行备份，另外还支持将备份数据以流的形式输出到远程主机上。<br>xtrabackup在拷贝redo日志前会刷新redo日志到磁盘，因为mysql先写binlog再刷redo日志，但xtrabackup并不拷贝binlog，如果不主动将redo日志刷到磁盘，恢复的时候可能会丢失事务。 </p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="http://mysql.taobao.org/monthly/" target="_blank" rel="noopener">淘宝数据库内核月报</a><br><a href="https://book.douban.com/subject/23008813/" target="_blank" rel="noopener">高性能MySQL</a><br><a href="https://book.douban.com/subject/26630834/" target="_blank" rel="noopener">高可用MySQL（第2版）</a><br><a href="http://www.ywnds.com/?p=12839" target="_blank" rel="noopener">二进制日志解析</a><br><a href="http://www.ywnds.com/?p=10431" target="_blank" rel="noopener">InnoDB故障恢复流程</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报6-MySQL备份系统项目/" data-tooltip="周报6 MySQL备份系统项目" aria-label="上一篇: 周报6 MySQL备份系统项目">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring/" data-tooltip="周报4 Spring" aria-label="下一篇: 周报4 Spring">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报6-MySQL备份系统项目/" data-tooltip="周报6 MySQL备份系统项目" aria-label="上一篇: 周报6 MySQL备份系统项目">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring/" data-tooltip="周报4 Spring" aria-label="下一篇: 周报4 Spring">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

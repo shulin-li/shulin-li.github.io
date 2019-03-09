@@ -1,0 +1,372 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>Linux学习笔记 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n前言这个笔记是学习“极客时间-Linux性能优化实战“时所作,基本就是摘抄。。。。。。\nLoad average什么是Load average当执行top或者uptime时输出的最后三个数分别表示过去1/5/15分钟的平均负载,平均负载指的就是单位时间内,系统处于可运行状态和不可中断状态的平均进程数,可运行状态即运行中以及等待CPU的状态,不可中断状态指的则是进入内核态中不可被打断的状态,比如写数据后等待硬盘的响应,这两个状态也就是ps命令中STAT为R/D(Disk Sleep)的状态。如果只有一个核(Linux将超线程技术CPU认为真实CPU，即2核4线程认为是4CPU),而平均负载为2，说明有一半的线程进程竞争不到CPU。平均负载并不代表着CPU使用率,比如在IO密集型程序较多时,可能绝大多数的进程都处于D状态,此时并不使用CPU但是平均负载仍然很高。  \n检查Load average高的原因工具:  \n\npidstat  用来查看进程的CPU,内存,IO,上下文切换等性能指标\nmpstat  用来查看CPU在用户态,内核态的使用率,等待IO时间占比等性能指标\niostat    用来检测主机在io性能指标用stress运行cpu密集型进程1stress --cpu 1 --timeout600\n\n\n通过mpstat查看cpu相关指标,可以看到CPU2的使用率一直是100%,这其中的%use/%nice分别表示用户态CPU时间占比和低优先级用户态CPU时间占比(不是包含关系)  \n接下来运行IO密集型进程1stress-ng -i 1 --hdd 1 --timeout 600\n通过mpstat可以看到CPU0的iowait很高而CPU使用率很低可以使用pidstat查看进程的性能参数1pidstat -u 5 1\n可以看到是由stress-ng进程导致的    \niowaitiowait是一个比较模糊的指标,他表示的是”采样周期内CPU空闲且有未完成的IO的时间占比“,所以这个参数既不表示”CPU繁忙“(因为首要条件就是CPU空闲),也并不一定表示遇到了IO性能瓶颈(同样的未完成IO请求数,如果CPU空闲时间变多,iowait也会升高)。这一段的理解参考了:理解 %IOWAIT (%WIO)\n进程性能上下文切换上下文切换(CPU上下文切换)指的是保存旧任务的状态并加载新任务状态以执行新任务,根据“任务”不同可以分为进程上下文切换/线程上下文切换/中断上下文切换系统调用同样会发生CPU上下文切换,他需要保存寄存器中的用户态指令,数据等,再加载内核态指令,执行完系统调用后,再把之前保存的用户态数据装回来,一次系统调用会发生两次CPU上下文切换,系统调用并不发生进程切换(始终是同一个进程) 。进程上下文包括了进程的虚拟内存,用户栈,全局变量等用户态资源以及内核堆栈等内核资源,所以发生进程上下文切换时,相比CPU上下文切换还要保存虚拟内存用户栈等资源。线程上下文切换需要区分切换前后线程是否属于同一个进程,不属于时的线程切换就相当于进程切换,属于同一进程时,无需在保存加载虚拟内存等资源,只需切换私有数据。中断上下文切换是为了快速响应硬件的中断,中断处理可能会打断进程的正常调度和执行,与进程上下文不同的是,中断上下文不涉及到用户态,中断程序只运行在内核态。\n监控上下文切换使用vmstat工具可以查看系统的上下文切换procs下的r/b分别表示可运行状态和不可中断状态的线程数,system下的in/cs分别表示每秒的中断和上下文切换的次数,cpu下的st表示的是由于虚拟化技术被“偷走”的时间(我靠,这都能检测出来的吗????????)  \n通过pidstat可以查看具体的进程的上下文切换情况cswch指的是每秒由于IO,内存等原因而自愿进程的上下文切换,nvcswch指的则是由于时间片的原因而进行的非自愿上下文切换,如果非自愿值过大,说明进程争抢cpu情况比较严重。  \n进程性能进一步监控perf工具可以用来查看一个进程具体在哪个函数消耗了大量CPU资源perf top的显示如下,第一行表示的是在总共4213865(Event count)个cpu时钟周期(event)中采样了20(Samples)个;Overhead显示的是该行为在采样中的时间占比,Shard显示的则是该行为所在的动态库,O表示动态库的类型,k为内核空间,.为用户空间,最后的Symbol则是函数名或函数的十六进制地址perf top -g -p 指定进程pid则可以详细查看某个进程的执行情况,并且可以展开他的调用堆栈从而进一步定位程序的性能瓶颈\n中断中断是一种异步的事件处理机制,为了防止中断处理时间过长,一般将中断分为上下两部分,上半部中断在中断禁止模式下运行,下半部则是进行一些相对较耗时的操作,一般以内核线程方式运行。上半部一般直接处理硬件请求,也就是硬中断,打断CPU立即执行;下半部则是内核触发,也即软中断(每个CPU对应一个软中断内核线程),延迟执行  \n查看网络中断(工具使用)sar工具用来查看系统的网络收发,IFACE表示网卡,rxpck/txpck分别表示每秒接收发送的网络帧数,rxkB/txkB表示每秒接收发送的字节数,rxcmp/txcmp表示每秒接收发送的压缩包数,rxmcst为每秒接收的多播数据包  ","dateCreated":"2018-12-06T17:24:52+08:00","dateModified":"2019-03-02T10:19:55+08:00","datePublished":"2018-12-06T17:24:52+08:00","description":"Linux学习笔记","headline":"Linux学习笔记","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/12/06/Linux学习笔记/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/12/06/Linux学习笔记/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"}</script>
+    <meta name="description" content="Linux学习笔记">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="Linux学习笔记">
+<meta property="og:url" content="http://yoursite.com/2018/12/06/Linux学习笔记/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Linux学习笔记">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverge1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage2.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage3.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/switch.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/switch1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/perftop.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/perfmongod.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/sar.png">
+<meta property="og:updated_time" content="2019-03-02T02:19:55.083Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Linux学习笔记">
+<meta name="twitter:description" content="Linux学习笔记">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Linux学习笔记
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-12-06T17:24:52+08:00">
+	
+		    12月 06, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#前言"><span class="toc-text">前言</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#Load-average"><span class="toc-text">Load average</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#什么是Load-average"><span class="toc-text">什么是Load average</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#检查Load-average高的原因"><span class="toc-text">检查Load average高的原因</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#iowait"><span class="toc-text">iowait</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#进程性能"><span class="toc-text">进程性能</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#上下文切换"><span class="toc-text">上下文切换</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#监控上下文切换"><span class="toc-text">监控上下文切换</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#进程性能进一步监控"><span class="toc-text">进程性能进一步监控</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#中断"><span class="toc-text">中断</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#查看网络中断-工具使用"><span class="toc-text">查看网络中断(工具使用)</span></a></li></ol></li></ol>
+<h1 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h1><p>这个笔记是学习“极客时间-Linux性能优化实战“时所作,基本就是摘抄。。。。。。</p>
+<h1 id="Load-average"><a href="#Load-average" class="headerlink" title="Load average"></a>Load average</h1><h2 id="什么是Load-average"><a href="#什么是Load-average" class="headerlink" title="什么是Load average"></a>什么是Load average</h2><p>当执行top或者uptime时<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage.png" alt><br>输出的最后三个数分别表示过去1/5/15分钟的平均负载,平均负载指的就是单位时间内,系统处于可运行状态和不可中断状态的平均进程数,可运行状态即运行中以及等待CPU的状态,不可中断状态指的则是进入内核态中不可被打断的状态,比如写数据后等待硬盘的响应,这两个状态也就是ps命令中STAT为R/D(Disk Sleep)的状态。<br>如果只有一个核(Linux将超线程技术CPU认为真实CPU，即2核4线程认为是4CPU),而平均负载为2，说明有一半的线程进程竞争不到CPU。<br>平均负载并不代表着CPU使用率,比如在IO密集型程序较多时,可能绝大多数的进程都处于D状态,此时并不使用CPU但是平均负载仍然很高。  </p>
+<h2 id="检查Load-average高的原因"><a href="#检查Load-average高的原因" class="headerlink" title="检查Load average高的原因"></a>检查Load average高的原因</h2><p>工具:  </p>
+<ul>
+<li>pidstat  用来查看进程的CPU,内存,IO,上下文切换等性能指标</li>
+<li>mpstat  用来查看CPU在用户态,内核态的使用率,等待IO时间占比等性能指标</li>
+<li>iostat    用来检测主机在io性能指标<br>用stress运行cpu密集型进程<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">stress --cpu 1 --timeout600</span><br></pre></td></tr></table></figure>
+</li>
+</ul>
+<p>通过mpstat查看cpu相关指标,可以看到CPU2的使用率一直是100%,这其中的%use/%nice分别表示用户态CPU时间占比和低优先级用户态CPU时间占比(不是包含关系)<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverge1.png" alt>  </p>
+<p>接下来运行IO密集型进程<br><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">stress-ng -i 1 --hdd 1 --timeout 600</span><br></pre></td></tr></table></figure></p>
+<p>通过mpstat可以看到CPU0的iowait很高而CPU使用率很低<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage2.png" alt><br>可以使用pidstat查看进程的性能参数<br><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">pidstat -u 5 1</span><br></pre></td></tr></table></figure></p>
+<p>可以看到是由stress-ng进程导致的<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/loadaverage3.png" alt>    </p>
+<h3 id="iowait"><a href="#iowait" class="headerlink" title="iowait"></a>iowait</h3><p>iowait是一个比较模糊的指标,他表示的是”采样周期内CPU空闲且有未完成的IO的时间占比“,所以这个参数既不表示”CPU繁忙“(因为首要条件就是CPU空闲),也并不一定表示遇到了IO性能瓶颈(同样的未完成IO请求数,如果CPU空闲时间变多,iowait也会升高)。<br>这一段的理解参考了:<br><a href="http://linuxperf.com/?p=33" target="_blank" rel="noopener">理解 %IOWAIT (%WIO)</a></p>
+<h1 id="进程性能"><a href="#进程性能" class="headerlink" title="进程性能"></a>进程性能</h1><h2 id="上下文切换"><a href="#上下文切换" class="headerlink" title="上下文切换"></a>上下文切换</h2><p>上下文切换(CPU上下文切换)指的是保存旧任务的状态并加载新任务状态以执行新任务,根据“任务”不同可以分为进程上下文切换/线程上下文切换/中断上下文切换<br>系统调用同样会发生CPU上下文切换,他需要保存寄存器中的用户态指令,数据等,再加载内核态指令,执行完系统调用后,再把之前保存的用户态数据装回来,一次系统调用会发生两次CPU上下文切换,系统调用并不发生进程切换(始终是同一个进程) 。<br>进程上下文包括了进程的虚拟内存,用户栈,全局变量等用户态资源以及内核堆栈等内核资源,所以发生进程上下文切换时,相比CPU上下文切换还要保存虚拟内存用户栈等资源。<br>线程上下文切换需要区分切换前后线程是否属于同一个进程,不属于时的线程切换就相当于进程切换,属于同一进程时,无需在保存加载虚拟内存等资源,只需切换私有数据。<br>中断上下文切换是为了快速响应硬件的中断,中断处理可能会打断进程的正常调度和执行,与进程上下文不同的是,中断上下文不涉及到用户态,中断程序只运行在内核态。</p>
+<h2 id="监控上下文切换"><a href="#监控上下文切换" class="headerlink" title="监控上下文切换"></a>监控上下文切换</h2><p>使用vmstat工具可以查看系统的上下文切换<br>procs下的r/b分别表示可运行状态和不可中断状态的线程数,system下的in/cs分别表示每秒的中断和上下文切换的次数,cpu下的st表示的是由于虚拟化技术被“偷走”的时间(我靠,这都能检测出来的吗????????)<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/switch.png" alt>  </p>
+<p>通过pidstat可以查看具体的进程的上下文切换情况<br>cswch指的是每秒由于IO,内存等原因而自愿进程的上下文切换,nvcswch指的则是由于时间片的原因而进行的非自愿上下文切换,如果非自愿值过大,说明进程争抢cpu情况比较严重。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/switch1.png" alt>  </p>
+<h2 id="进程性能进一步监控"><a href="#进程性能进一步监控" class="headerlink" title="进程性能进一步监控"></a>进程性能进一步监控</h2><p>perf工具可以用来查看一个进程具体在哪个函数消耗了大量CPU资源<br>perf top的显示如下,第一行表示的是在总共4213865(Event count)个cpu时钟周期(event)中采样了20(Samples)个;Overhead显示的是该行为在采样中的时间占比,Shard显示的则是该行为所在的动态库,O表示动态库的类型,k为内核空间,.为用户空间,最后的Symbol则是函数名或函数的十六进制地址<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/perftop.png" alt><br>perf top -g -p 指定进程pid则可以详细查看某个进程的执行情况,并且可以展开他的调用堆栈从而进一步定位程序的性能瓶颈<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/perfmongod.png" alt></p>
+<h1 id="中断"><a href="#中断" class="headerlink" title="中断"></a>中断</h1><p>中断是一种异步的事件处理机制,为了防止中断处理时间过长,一般将中断分为上下两部分,上半部中断在中断禁止模式下运行,下半部则是进行一些相对较耗时的操作,一般以内核线程方式运行。<br>上半部一般直接处理硬件请求,也就是硬中断,打断CPU立即执行;下半部则是内核触发,也即软中断(每个CPU对应一个软中断内核线程),延迟执行  </p>
+<h2 id="查看网络中断-工具使用"><a href="#查看网络中断-工具使用" class="headerlink" title="查看网络中断(工具使用)"></a>查看网络中断(工具使用)</h2><p>sar工具用来查看系统的网络收发,IFACE表示网卡,rxpck/txpck分别表示每秒接收发送的网络帧数,rxkB/txkB表示每秒接收发送的字节数,rxcmp/txcmp表示每秒接收发送的压缩包数,rxmcst为每秒接收的多播数据包<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/sar.png" alt>  </p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/02/20/JavaIO/" data-tooltip="JavaIO" aria-label="上一篇: JavaIO">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/10/29/Go学习笔记/" data-tooltip="Go学习笔记" aria-label="下一篇: Go学习笔记">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/02/20/JavaIO/" data-tooltip="JavaIO" aria-label="上一篇: JavaIO">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/10/29/Go学习笔记/" data-tooltip="Go学习笔记" aria-label="下一篇: Go学习笔记">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

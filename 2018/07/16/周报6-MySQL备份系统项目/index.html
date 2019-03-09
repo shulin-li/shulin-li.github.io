@@ -1,0 +1,365 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>周报6 MySQL备份系统项目 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n项目功能需求\n以mysql5.7.22版本为基线版本\n支持用户自定义备份周期\n支持在线恢复数据库\n支持下载数据库备份\n支持容灾存储和海量存储\n\n功能分析备份由用户自己设计备份周期(周一周日)，备份时间。考虑到用户可能需要将云数据库中的数据导入到本地进行部分操作，而用户本地可能是windows系统，同时”下载物理备份到linux-&gt;根据物理备份进行恢复-&gt;导出sql文件-&gt;复制到windows系统”这一操作过于复杂，所以提供给用户”备份实例(即刻备份)”的手动选项，支持物理/逻辑备份，实例/单库备份。PS：逻辑实例备份不备份MySQL系统库。\n在线恢复数据库1.根据已有的备份文件进行恢复。2.根据用户指定的时间进行精确恢复(秒级)。  \n下载数据库备份每次的备份(周期备份/备份实例)得到的备份文件都提供一个url，供用户下载使用。  \n容灾提供给用户”开启主从复制”的选项。  \n实现备份备份工具选择考虑到mysqldump/mysqlpump等逻辑工具在导出导入时耗时过长，所以使用xtrabackup进行物理备份(周期性的定时备份)，对于”备份实例”(手动备份)，使用xtrabackup和mysqlpump进行备份。  \n周期备份(定时)mysql实例所在主机上存有已经写好的备份脚本，当用户设置好备份周期后，通过jsch远程连接mysql实例所在主机，使用crontab命令建立定时任务(定时运行备份脚本)。    \n备份记录表的更新所有的用户的所有实例的所有备份记录都会记录在表中(备份文件名，备份时间，文件大小…)，备份记录很多且备份时间各不相同，不可能由服务器这边主动的去连接所有主机查询备份文件的属性。解决方法：在备份脚本的最后获取备份文件的所有属性，然后通过crul命令将这些属性通过一个get请求传到服务器。  \n在线恢复数据库1.用户根据已有的备份文件进行恢复:后台判断备份文件的类型(物理/逻辑)，调用不同的备份脚本进行恢复。2.根据用户指定的时间进行精确恢复，后台先查询备份记录表，找到距用户指定时间最近全量备份，然后根据该全量备份进行恢复，然后读取xtrabackup_info中的position信息，通过mysqlbinlog指定start-pos和stop-datetime最终恢复到用户指定时间。  \n下载数据库备份利用nginx搭建一个文件服务器，每个备份文件对应一个url(下载链接)。  \n容灾用户选择开启主从复制后，后台查询并获得一个可用作slave的mysql实例，运行master上的逻辑备份脚本(防止master的binlog被冲掉；逻辑备份含有”SET @@GLOBAL.GTID_PURGED=”语句，节省操作)，slave通过scp拷贝master上的sql文件进行恢复，同时change master to；/start slave；  \n缺陷1.使用crontab做定时任务，无法对定时任务进行监控以及失败重做，这样的定时任务基本不可控。2.JSCh连接主机运行脚本的方式太傻了(然而我没能找到更好的…)3.没能实现基于物理的增量备份。 原因：若增加物理增量备份功能，当用户在备份记录表中点击某个增量备份文件后的恢复功能时，后台需要查询次增量备份之前的所有增量以及一个全量，感觉恢复脚本并不好写…4.如果用户开启主从复制后对主库进行了恢复操作，可能会造成主从数据不一致(可能主多，可能从多)  ","dateCreated":"2018-07-16T19:29:06+08:00","dateModified":"2018-08-09T13:35:55+08:00","datePublished":"2018-07-16T19:29:06+08:00","description":"MySQL备份mini项目","headline":"周报6 MySQL备份系统项目","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/07/16/周报6-MySQL备份系统项目/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/07/16/周报6-MySQL备份系统项目/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png"}</script>
+    <meta name="description" content="MySQL备份mini项目">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="周报6 MySQL备份系统项目">
+<meta property="og:url" content="http://yoursite.com/2018/07/16/周报6-MySQL备份系统项目/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="MySQL备份mini项目">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fsetting-1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2FbackupInstance-1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fopenslave.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fcurl.png">
+<meta property="og:updated_time" content="2018-08-09T05:35:55.682Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="周报6 MySQL备份系统项目">
+<meta name="twitter:description" content="MySQL备份mini项目">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fsetting-1.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/mysql.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            周报6 MySQL备份系统项目
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-07-16T19:29:06+08:00">
+	
+		    7月 16, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt --><p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#项目功能需求"><span class="toc-text">项目功能需求</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#功能分析"><span class="toc-text">功能分析</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#备份"><span class="toc-text">备份</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#在线恢复数据库"><span class="toc-text">在线恢复数据库</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#下载数据库备份"><span class="toc-text">下载数据库备份</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#容灾"><span class="toc-text">容灾</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#实现"><span class="toc-text">实现</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#备份-1"><span class="toc-text">备份</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#备份工具选择"><span class="toc-text">备份工具选择</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#周期备份-定时"><span class="toc-text">周期备份(定时)</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#备份记录表的更新"><span class="toc-text">备份记录表的更新</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#在线恢复数据库-1"><span class="toc-text">在线恢复数据库</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#下载数据库备份-1"><span class="toc-text">下载数据库备份</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#容灾-1"><span class="toc-text">容灾</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#缺陷"><span class="toc-text">缺陷</span></a></li></ol>
+<h1 id="项目功能需求"><a href="#项目功能需求" class="headerlink" title="项目功能需求"></a>项目功能需求</h1><ul>
+<li>以mysql5.7.22版本为基线版本</li>
+<li>支持用户自定义备份周期</li>
+<li>支持在线恢复数据库</li>
+<li>支持下载数据库备份</li>
+<li>支持容灾存储和海量存储</li>
+</ul>
+<h1 id="功能分析"><a href="#功能分析" class="headerlink" title="功能分析"></a>功能分析</h1><h2 id="备份"><a href="#备份" class="headerlink" title="备份"></a>备份</h2><p>由用户自己设计备份周期(周一周日)，备份时间。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fsetting-1.png" alt><br>考虑到用户可能需要将云数据库中的数据导入到本地进行部分操作，而用户本地可能是windows系统，同时”下载物理备份到linux-&gt;根据物理备份进行恢复-&gt;导出sql文件-&gt;复制到windows系统”这一操作过于复杂，所以提供给用户”备份实例(即刻备份)”的手动选项，支持物理/逻辑备份，实例/单库备份。<br>PS：逻辑实例备份不备份MySQL系统库。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2FbackupInstance-1.png" alt></p>
+<h2 id="在线恢复数据库"><a href="#在线恢复数据库" class="headerlink" title="在线恢复数据库"></a>在线恢复数据库</h2><p>1.根据已有的备份文件进行恢复。<br>2.根据用户指定的时间进行精确恢复(秒级)。  </p>
+<h2 id="下载数据库备份"><a href="#下载数据库备份" class="headerlink" title="下载数据库备份"></a>下载数据库备份</h2><p>每次的备份(周期备份/备份实例)得到的备份文件都提供一个url，供用户下载使用。  </p>
+<h2 id="容灾"><a href="#容灾" class="headerlink" title="容灾"></a>容灾</h2><p>提供给用户”开启主从复制”的选项。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fopenslave.png" alt>  </p>
+<h1 id="实现"><a href="#实现" class="headerlink" title="实现"></a>实现</h1><h2 id="备份-1"><a href="#备份-1" class="headerlink" title="备份"></a>备份</h2><h3 id="备份工具选择"><a href="#备份工具选择" class="headerlink" title="备份工具选择"></a>备份工具选择</h3><p>考虑到mysqldump/mysqlpump等逻辑工具在导出导入时耗时过长，所以使用xtrabackup进行物理备份(周期性的定时备份)，对于”备份实例”(手动备份)，使用xtrabackup和mysqlpump进行备份。  </p>
+<h3 id="周期备份-定时"><a href="#周期备份-定时" class="headerlink" title="周期备份(定时)"></a>周期备份(定时)</h3><p>mysql实例所在主机上存有已经写好的备份脚本，当用户设置好备份周期后，通过jsch远程连接mysql实例所在主机，使用crontab命令建立定时任务(定时运行备份脚本)。    </p>
+<h3 id="备份记录表的更新"><a href="#备份记录表的更新" class="headerlink" title="备份记录表的更新"></a>备份记录表的更新</h3><p>所有的用户的所有实例的所有备份记录都会记录在表中(备份文件名，备份时间，文件大小…)，备份记录很多且备份时间各不相同，不可能由服务器这边主动的去连接所有主机查询备份文件的属性。<br>解决方法：在备份脚本的最后获取备份文件的所有属性，然后通过crul命令将这些属性通过一个get请求传到服务器。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly6%2Fcurl.png" alt>  </p>
+<h2 id="在线恢复数据库-1"><a href="#在线恢复数据库-1" class="headerlink" title="在线恢复数据库"></a>在线恢复数据库</h2><p>1.用户根据已有的备份文件进行恢复:后台判断备份文件的类型(物理/逻辑)，调用不同的备份脚本进行恢复。<br>2.根据用户指定的时间进行精确恢复，后台先查询备份记录表，找到距用户指定时间最近全量备份，然后根据该全量备份进行恢复，然后读取xtrabackup_info中的position信息，通过mysqlbinlog指定start-pos和stop-datetime最终恢复到用户指定时间。  </p>
+<h2 id="下载数据库备份-1"><a href="#下载数据库备份-1" class="headerlink" title="下载数据库备份"></a>下载数据库备份</h2><p>利用nginx搭建一个文件服务器，每个备份文件对应一个url(下载链接)。  </p>
+<h2 id="容灾-1"><a href="#容灾-1" class="headerlink" title="容灾"></a>容灾</h2><p>用户选择开启主从复制后，后台查询并获得一个可用作slave的mysql实例，运行master上的逻辑备份脚本(防止master的binlog被冲掉；逻辑备份含有”SET @@GLOBAL.GTID_PURGED=”语句，节省操作)，slave通过scp拷贝master上的sql文件进行恢复，同时change master to；/start slave；  </p>
+<h1 id="缺陷"><a href="#缺陷" class="headerlink" title="缺陷"></a>缺陷</h1><p>1.使用crontab做定时任务，无法对定时任务进行监控以及失败重做，这样的定时任务基本不可控。<br>2.JSCh连接主机运行脚本的方式太傻了(然而我没能找到更好的…)<br>3.没能实现基于物理的增量备份。 原因：若增加物理增量备份功能，当用户在备份记录表中点击某个增量备份文件后的恢复功能时，后台需要查询次增量备份之前的所有增量以及一个全量，感觉恢复脚本并不好写…<br>4.如果用户开启主从复制后对主库进行了恢复操作，可能会造成主从数据不一致(可能主多，可能从多)  </p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/07/Tomcat源码/" data-tooltip="Tomcat源码" aria-label="上一篇: Tomcat源码">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报5-MySQL备份-复制/" data-tooltip="周报5 MySQL备份/复制" aria-label="下一篇: 周报5 MySQL备份/复制">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/07/Tomcat源码/" data-tooltip="Tomcat源码" aria-label="上一篇: Tomcat源码">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报5-MySQL备份-复制/" data-tooltip="周报5 MySQL备份/复制" aria-label="下一篇: 周报5 MySQL备份/复制">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

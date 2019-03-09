@@ -1,0 +1,346 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>周报3 JVM - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\nJVMTLAB当多线程new对象时，每一次的对象分配都需要对内存做同步操作，TLAB是在new Thread时就为线程分配的私有内存空间(由start end两个占位指针”占住”该空间)，该线程的new操作优先在TLAB内分配(指针碰撞)。TLAB剩余内存不够时的分配细节:如果TLAB剩余空间小于”允许浪费的最大空间”，那么将该空间以数组填充并尝试分配一个新的TLAB；否则将对象直接分配在Eden区(不废弃当前TLAB)。\n栈上分配/标量替换JVM通过对象逃逸分析性发现某个对象作用域仅限于方法内或线程内,则可以通过栈上分配将对象直接分配在栈上，以减少垃圾回收的压力，但hotspot并没有实现真正的栈上分配，他采用的是标量替换，即并不创建完整的对象，而选择将对象中的字段当成独立的局部变量。   \n多态实现JVM为每个类维护一个方法表(vtable)，当类A继承类B时，类A会先复制类B的方法表，然后解析类A自己的方法并添加到方法表，随后判断是否有方法重写，如果有将vtable中该方法对应的指针指向重写方法。当以父类引用调用子类重写方法时(invokevirtual指令)，会先去寻找操作数栈中第一个引用指向的对象的实际类型，然后去方法表中进行方法调用。  \n参考G1算法之R大回答关于incremental update与SATB的一点理解G1收集器理解和原理分析G1收集器之对象分配过程HotSpot实战  ","dateCreated":"2018-05-30T18:50:41+08:00","dateModified":"2019-03-05T17:36:46+08:00","datePublished":"2018-05-30T18:50:41+08:00","description":"JVM","headline":"周报3 JVM","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/05/30/周报3JVM/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/05/30/周报3JVM/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png"}</script>
+    <meta name="description" content="JVM">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="周报3 JVM">
+<meta property="og:url" content="http://yoursite.com/2018/05/30/周报3JVM/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="JVM">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-03-05T09:36:46.948Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="周报3 JVM">
+<meta name="twitter:description" content="JVM">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            周报3 JVM
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-05-30T18:50:41+08:00">
+	
+		    5月 30, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#JVM"><span class="toc-text">JVM</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#TLAB"><span class="toc-text">TLAB</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#栈上分配-标量替换"><span class="toc-text">栈上分配/标量替换</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#多态实现"><span class="toc-text">多态实现</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="JVM"><a href="#JVM" class="headerlink" title="JVM"></a>JVM</h1><h2 id="TLAB"><a href="#TLAB" class="headerlink" title="TLAB"></a>TLAB</h2><p>当多线程new对象时，每一次的对象分配都需要对内存做同步操作，TLAB是在new Thread时就为线程分配的私有内存空间(由start end两个占位指针”占住”该空间)，该线程的new操作优先在TLAB内分配(指针碰撞)。<br>TLAB剩余内存不够时的分配细节:如果TLAB剩余空间小于”允许浪费的最大空间”，那么将该空间以数组填充并尝试分配一个新的TLAB；否则将对象直接分配在Eden区(不废弃当前TLAB)。</p>
+<h2 id="栈上分配-标量替换"><a href="#栈上分配-标量替换" class="headerlink" title="栈上分配/标量替换"></a>栈上分配/标量替换</h2><p>JVM通过对象逃逸分析性发现某个对象作用域仅限于方法内或线程内,则可以通过栈上分配将对象直接分配在栈上，以减少垃圾回收的压力，但hotspot并没有实现真正的栈上分配，他采用的是标量替换，即并不创建完整的对象，而选择将对象中的字段当成独立的局部变量。   </p>
+<h2 id="多态实现"><a href="#多态实现" class="headerlink" title="多态实现"></a>多态实现</h2><p>JVM为每个类维护一个方法表(vtable)，当类A继承类B时，类A会先复制类B的方法表，然后解析类A自己的方法并添加到方法表，随后判断是否有方法重写，如果有将vtable中该方法对应的指针指向重写方法。当以父类引用调用子类重写方法时(invokevirtual指令)，会先去寻找操作数栈中第一个引用指向的对象的实际类型，然后去方法表中进行方法调用。  </p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="http://hllvm.group.iteye.com/group/topic/44381#post-272188" target="_blank" rel="noopener">G1算法之R大回答</a><br><a href="http://hllvm.group.iteye.com/group/topic/44529" target="_blank" rel="noopener">关于incremental update与SATB的一点理解</a><br><a href="https://liuzhengyang.github.io/2017/06/07/garbage-first-collector/" target="_blank" rel="noopener">G1收集器理解和原理分析</a><br><a href="https://www.jianshu.com/p/a0efa489b99f" target="_blank" rel="noopener">G1收集器之对象分配过程</a><br><a href="https://book.douban.com/subject/25847620/" target="_blank" rel="noopener">HotSpot实战</a>  </p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring/" data-tooltip="周报4 Spring" aria-label="上一篇: 周报4 Spring">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/29/周报2Redis/" data-tooltip="周报2 Redis" aria-label="下一篇: 周报2 Redis">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring/" data-tooltip="周报4 Spring" aria-label="上一篇: 周报4 Spring">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/29/周报2Redis/" data-tooltip="周报2 Redis" aria-label="下一篇: 周报2 Redis">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

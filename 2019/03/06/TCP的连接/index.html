@@ -1,0 +1,351 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>TCP - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n三次握手1.客户端向服务端发送SYN包(seq=x)。客户端进入SYN_SENT状态。2.服务端收到客户端的SYN包后,要发送ACK(ack=x+1)进行确认,同时发送服务端的SYN包(seq=y)。服务端进入SYN_RECV状态3.客户端收到服务端ACK和SYN后发送ACK的ACK(ack=y+1),客户端进入ESTABLISHED状态,服务端收到ACK后也进入ESTABLISHED状态在第三次握手的时候客户端已经可以附带数据了。  \n为什么是三次A发送了连接请求包之后,B回应了这个请求,但是此时B并不能确认A收到了他的回应,有可能A没有收到B的应答,认为B不在,所以放弃建立连接,因此B不能在发送完应答后就建立连接,而需要等待A的ACK之ACK。但是这样无限的ACK之ACK之ACK之ACK。。。。。中没有一个100%可靠的终止条件,所以无论是三次还是四次还是五次握手,都是可以的,但握手的关键在于客户端和服务端都要确认“自己发送的消息对方是能收到的”,这一条件客户端通过第一二次握手验证,服务端通过第二三次握手验证,所以三次握手是满足这一条件的最少握手次数。即使第三次握手的ACK丢失了且服务端下线,在接下来客户端发送数据时一样可以发现问题。\n四次挥手1.客户端发送FIN包(seq=x)尝试关闭客户端-&gt;服务端的发送连接。客户端进入FIN_WAIT_1状态。此时的客户端仍然可以接受数据且如果发送该FIN包之前的数据没有得到ACK,仍然可以重传那些数据。2.服务端收到FIN包后,发送ACK(ack=x+1)包后,服务端进入CLOSE_WAIT状态,收到ACK包后,客户端进入FIN_WAIT_2状态。这时的客户端在等待服务端的FIN数据包,linux内通过tcp_fin_timeout参数定义这个等待的超时时间。3.服务端发送FIN包(seq=y,ack=x+1)尝试关闭服务端-&gt;客户端的发送连接。服务端进入LAST_ACK状态,当收到这个FIN包后,客户端进入TIME_WAIT状态。4.客户端发送ACK(ack=y+1),然后等到2MSL时间,转为CLOSED,服务端收到后也转为CLOSED。MSL是报文最大生存时间,指的是任何报文在网络上存在的最长时间,TIME_WAIT要等待这么长时间的原因就是占用着当前这个socket,以防新建socket收到之前的服务端的数据产生混淆。如果第四步的ACK,服务端没有收到,服务端仍然会重发FIN,此时客户端会向其返回RST连接重置标志。之所以要四次挥手是因为TCP是全双工的,需要关闭两个发送通道  \nTIME_WAIT&amp;CLOSE_WAIT从四次挥手可以看出,TIME_WAIT是出现在主动关闭的一端,主要就是可以延缓socket资源的回收以避免数据冲突,解决办法就是开启tcp keepalive,在对端关闭没有响应keepalive包的情况下能够直接关闭socket,另外也可以将net.ipv4.tcp_tw_reuse参数设置为1,即允许重用TIME_WAIT的socket。CLOSE_WAIT则是被动关闭端没有发送FIN,比如没有调用InputStream的close方法。\nRST当尝试向没有被监听的端口发送数据时,就会收到RST,如果是尝试建立连接时收到RST,就会抛出 connection refused,如果之前已经建立了连接,但是对端close了,再尝试向对端写数据时收到RST就会抛出connection reset\n参考趣谈网络协议","dateCreated":"2019-03-06T13:14:45+08:00","dateModified":"2019-03-07T12:56:14+08:00","datePublished":"2019-03-06T13:14:45+08:00","description":"TCP","headline":"TCP","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/03/06/TCP的连接/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/03/06/TCP的连接/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"}</script>
+    <meta name="description" content="TCP">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="TCP">
+<meta property="og:url" content="http://yoursite.com/2019/03/06/TCP的连接/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="TCP">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tcp/three.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tcp/four.png">
+<meta property="og:updated_time" content="2019-03-07T04:56:14.719Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="TCP">
+<meta name="twitter:description" content="TCP">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tcp/three.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            TCP
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-03-06T13:14:45+08:00">
+	
+		    3月 06, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#三次握手"><span class="toc-text">三次握手</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#为什么是三次"><span class="toc-text">为什么是三次</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#四次挥手"><span class="toc-text">四次挥手</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#TIME-WAIT-amp-CLOSE-WAIT"><span class="toc-text">TIME_WAIT&amp;CLOSE_WAIT</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#RST"><span class="toc-text">RST</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="三次握手"><a href="#三次握手" class="headerlink" title="三次握手"></a>三次握手</h1><p>1.客户端向服务端发送SYN包(seq=x)。客户端进入SYN_SENT状态。<br>2.服务端收到客户端的SYN包后,要发送ACK(ack=x+1)进行确认,同时发送服务端的SYN包(seq=y)。服务端进入SYN_RECV状态<br>3.客户端收到服务端ACK和SYN后发送ACK的ACK(ack=y+1),客户端进入ESTABLISHED状态,服务端收到ACK后也进入ESTABLISHED状态<br>在第三次握手的时候客户端已经可以附带数据了。  </p>
+<h2 id="为什么是三次"><a href="#为什么是三次" class="headerlink" title="为什么是三次"></a>为什么是三次</h2><p>A发送了连接请求包之后,B回应了这个请求,但是此时B并不能确认A收到了他的回应,有可能A没有收到B的应答,认为B不在,所以放弃建立连接,因此B不能在发送完应答后就建立连接,而需要等待A的ACK之ACK。<br>但是这样无限的ACK之ACK之ACK之ACK。。。。。中没有一个100%可靠的终止条件,所以无论是三次还是四次还是五次握手,都是可以的,但握手的关键在于客户端和服务端都要确认“自己发送的消息对方是能收到的”,这一条件客户端通过第一二次握手验证,服务端通过第二三次握手验证,所以三次握手是满足这一条件的最少握手次数。即使第三次握手的ACK丢失了且服务端下线,在接下来客户端发送数据时一样可以发现问题。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tcp/three.png" alt></p>
+<h1 id="四次挥手"><a href="#四次挥手" class="headerlink" title="四次挥手"></a>四次挥手</h1><p>1.客户端发送FIN包(seq=x)尝试关闭客户端-&gt;服务端的发送连接。客户端进入FIN_WAIT_1状态。此时的客户端仍然可以接受数据且如果发送该FIN包之前的数据没有得到ACK,仍然可以重传那些数据。<br>2.服务端收到FIN包后,发送ACK(ack=x+1)包后,服务端进入CLOSE_WAIT状态,收到ACK包后,客户端进入FIN_WAIT_2状态。这时的客户端在等待服务端的FIN数据包,linux内通过tcp_fin_timeout参数定义这个等待的超时时间。<br>3.服务端发送FIN包(seq=y,ack=x+1)尝试关闭服务端-&gt;客户端的发送连接。服务端进入LAST_ACK状态,当收到这个FIN包后,客户端进入TIME_WAIT状态。<br>4.客户端发送ACK(ack=y+1),然后等到2MSL时间,转为CLOSED,服务端收到后也转为CLOSED。<br>MSL是报文最大生存时间,指的是任何报文在网络上存在的最长时间,TIME_WAIT要等待这么长时间的原因就是占用着当前这个socket,以防新建socket收到之前的服务端的数据产生混淆。<br>如果第四步的ACK,服务端没有收到,服务端仍然会重发FIN,此时客户端会向其返回RST连接重置标志。<br>之所以要四次挥手是因为TCP是全双工的,需要关闭两个发送通道<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tcp/four.png" alt>  </p>
+<h1 id="TIME-WAIT-amp-CLOSE-WAIT"><a href="#TIME-WAIT-amp-CLOSE-WAIT" class="headerlink" title="TIME_WAIT&amp;CLOSE_WAIT"></a>TIME_WAIT&amp;CLOSE_WAIT</h1><p>从四次挥手可以看出,TIME_WAIT是出现在主动关闭的一端,主要就是可以延缓socket资源的回收以避免数据冲突,解决办法就是开启tcp keepalive,在对端关闭没有响应keepalive包的情况下能够直接关闭socket,另外也可以将net.ipv4.tcp_tw_reuse参数设置为1,即允许重用TIME_WAIT的socket。<br>CLOSE_WAIT则是被动关闭端没有发送FIN,比如没有调用InputStream的close方法。</p>
+<h1 id="RST"><a href="#RST" class="headerlink" title="RST"></a>RST</h1><p>当尝试向没有被监听的端口发送数据时,就会收到RST,如果是尝试建立连接时收到RST,就会抛出 connection refused,如果之前已经建立了连接,但是对端close了,再尝试向对端写数据时收到RST就会抛出connection reset</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://time.geekbang.org/column/85" target="_blank" rel="noopener">趣谈网络协议</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/09/hello-world/" data-tooltip="Hello World" aria-label="上一篇: Hello World">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/04/GC/" data-tooltip="GC" aria-label="下一篇: GC">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/09/hello-world/" data-tooltip="Hello World" aria-label="上一篇: Hello World">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/04/GC/" data-tooltip="GC" aria-label="下一篇: GC">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

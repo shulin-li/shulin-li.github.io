@@ -1,0 +1,378 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>Tomcat源码 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"      \n\n架构Tomcat整体模块架构   \nCatalina架构   \nServerServer主要担任一个管理者的角色,通过Service数组直接管理Service。也是最顶层的Servlet容器  \nServiceService是Container和Connector交流的协调者,用适当的Connector接收并处理请求(IO流解析为request),然后将请求交给Container(处理request,返回response)。  \nConnectorConnector以协议划分(HTTP1.1/HTTP2.0/AJP),负责监听指定的端口。  \nContainerContainer是一系列类的总称,与Connector对应,按协议不同处理各个的具体的请求。其按照由上至下的顺序是:Engine(处理Connector请求)-&gt;Host(域名,eg:a.qq.com/b.qq.com是两个web应用但应该对应一个Host)-&gt;Context(web应用,ServletContext)-&gt;Wrapper(Servlet)  \nPipeline/ValveTomcat对于请求的处理采用责任链的模式,每个Container都有一个Pipeline,以及最少一个Valve(EngineValve/HostValve…),请求到达Container(先Engine)后,Valve依次处理,Pipeline的最末端的Valve会将请求再传给Child(Host-&gt;Context-&gt;Wrapper)…依次处理,最终Wrapper处理完后,再逆向返回response。  \n类加载机制每个web应用可能依赖的jar包版本不同,如果使用同一个类加载器加载,就会导致版本覆盖而有web应用无法运行。因此,每一个web应用都应该有一个自己独立的类加载器用来隔离自己依赖的jar包。webappClassLoader主要负责加载WEB-INF/classes,WEB-INT/lib下的类,其不遵守Java的类加载机制,他的加载顺序时1.BootStrap类加载器加载。2.当前类加载器加载(WEB-INF/classes,WEB-INT/lib).3.父类加载器加载(父类加载器遵循Java的类加载机制)\n启动启动tomcat(startup.bat/startup.sh)时相当于调用BootStrap.main()方法，并传入”start”参数，首先，tomcat会调用BootStrap的静态代码，主要是new一些关键的File(指定根目录等)，然后实例化Bootstrap对象(bootstrap),并调用init()初始化，init()主要是先设置Tomcat的类加载器(默认commonLoader/catalinaLoader/sharedLoader都是URLClassLoader),再反射实例化一个Catalina对象，并反射调用设置其父加载器为commonLoader(URLClassLoader),然后将该对象赋值给Bootstrap中的catalinaDemon。接下来进入一大堆判断,参数为start,先后反射调用catalinaDemon对象的setAwait(true)(这个await变量目前不知道是什么作用)。  \n解析xml load()setAwait()后,调用load()解析server.xml(以如下xml为例),然后根据配置文件,进行各个对象的实例化。通过结点解析,先实例化Service逐级触发父类的实例化,实例化LifeCycleListeners(一个CopyOnWriteArrayList),设置LifeCycleState设置为NEW。再实例化HTTP对应的Connector,触发实例化链:-&gt;Http11NioProtocol-&gt;NioEndpoint。最终实例化出一个持有Http11NioProtocol引用的Connector(对应的协议是HTTP/1.1),并将该connector设置到service中。至此Connector的实例化告一段落。接下来是StanardEngine的实例化在这个过程中首先其父类会实例化一个StandardPipeline,然后Engine会实例化一个StandardEngineValve,并set到pipeline中。  \n  \n接下来需要实例化StandardHost,与Engine类似，父类实例化StandardPipeline,Host实例化StandardHostValve。PS:StandardHost中有一个WeakHashMap。注释中的child指的就是context(我们部署的web应用),Map的key是ClassLoader,Value是web应用的ContextPath,同时StandardHost中还有一个内部类(MemoryLeakTrackingListener)。  \n123456/**    * Track the class loaders for the child web applications so memory leaks    * can be detected.    */   private final Map&lt;ClassLoader, String&gt; childClassLoaders =           new WeakHashMap&lt;&gt;();\n至此server.xml已经解析完毕。StandardServer-&gt;StandardService-&gt;StandardEngine-&gt;StandardHost已经实例化完毕,因为并未在server.xml中直接配置Context,所以直到此时还没有跟部署的web应用有什么关系,但Host对象中有一个HostConfig对象,对于应用部署很重要。  \n初始化 init()接下来回到最开始实例化的Catalina的load方法中,调用server.init()(这是一个很长的调用链,不但会init其子容器,还会在多个父类间来回跳)。init的第一步都是设置LifecycleState.INITIALIZING,这个init()调用链关注重点在Connector的init(调用NioEndpoint.bind()), 该方法中实例化ServerSocketChannel,实例化一个以poller线程数为值的CountDownLatch………  \n加载应用 start()接下来回到BootStrap中,反射调用catalina.start()-&gt;server.start()。  \nHostConfigHost内拥有一个HostConfig实例,当Host启动时,HostConfig会自动进行应用部署(默认在webapps下)实例化Context对象-&gt;调用HostConfig.deployDirectories(),这里使用了线程池部署。此处会创建Context对象(注意:如果是war包部署,此时还没有解压),并为其创建设置ContextConfig对象。PS:这里尚不清楚具体是如何找到spring的,这时看到控制台输出”Spring WebApplicationInitializers detected on classpath”。并且deployDirectories()使用了FutureTask,debug貌似显示的是当调用future.get()时会触发servlet(wrapper)的实例化,DispatchServlet应该就是这时被触发,不过start时不止一个线程在工作,可能是debug时没看清..接下来遍历webapps并实例化相应的StandardContext  \nContext启动无论是何种部署方式,此时Context对象已经创建,但他还没有init,所以需要调用init(),在init后,start前,会调用ContextConfig.fixDocBase()解压war包(如果需要的话),然后进入Context真正的启动步骤。Context的启动会创建webappLoader,webAppClassLoader等一系列资源。Context启动子节点之前,会再次回到ContextConfig,进行web.xml解析-&gt;实例化Servlet-&gt;初始化web容器等一系列操作(spring就是在此处启动)PS:对于SpingBoot应用,web.xml并没有像传统的spring应用一样配置ContextLoaderListener,而是如下方式,但是在Application入口类中有实现WebApplicationInitializer(这个接口与Spring容器的初始化又是什么关系？)123&lt;web-app&gt;    &lt;display-name&gt;Archetype Created Web Application&lt;/display-name&gt;&lt;/web-app&gt;\n12345678910111213public class Application extends SpringBootServletInitializer&#123;    public static void main(String[] args) &#123;        // 程序启动入口        // 启动嵌入式的 Tomcat 并初始化 Spring 环境及其各 Spring 组件        SpringApplication.run(Application.class, args);    &#125;    @Override    protected SpringApplicationBuilder configure(SpringApplicationBuilder builder) &#123;        return builder.sources(Application.class);    &#125;&#125;\nConnector启动Connector启动首先会启动EndPoint,接下来会调用NioEndpoint的start方法,创建线程池,然后实例化Poller线程并启动,然后实例化Acceptor线程并启动。  \n至此Tomcat已经启动完毕。  \n接收处理请求Acceptor&amp;PollerAcceptor是一个与EndPoint生命周期类似的类,他的run方法主要的工作就是serverSocket.accept(),当有一个新的连接进入时调用setSocketOptions()进行一些新连接的处理(设置为非阻塞/为socket创建读写Buffer/将socket和Buffer封装为NioChannel),最终随机获得一个Poller并调用Poller.register(channel)。  \nPoller内有一个selector和装有PollerEvent实例的SynchronizedQueue。register()先将Acceptor传入的channel封装为一个NioSocketWrapper并将wrapper中的intrestOps设置为读事件,再封装为PollerEvent对象并加入到队列中。Poller的run方法主要内容就是循环调用events(),events()将队列中的所有PollerEvent弹出先调用其run()。  \nPollerEvent.run()主要是将新注册的event中的socketChannel注册到Poller的selector上,监听READ事件。  \nPS:如果不是新注册的/else逻辑没有看懂…回到Poller的run(),调用完events()后,遍历selector.selectedKeys()拿到selectionKey(run()中并不判断key是可读还是可写)和key.attachment(NioSocketWrapper)然后移除key,调用Poller.processKey()处理socket(NioEndpoint和其父类之间跳),其主要做法就是将socket包装为SocketProcessor并提交给线程池去处理,SocketProcessor会调用CoyoteAdapter.service()进行具体的request解析,然后通过前面说过的责任链逐层处理请求并返回response。PS:当注册到Poller上的Selector的socket可读时,由于Tomcat是多线程的,所以为防止多线程竞争处理这个socket,需要把这个socket从Poller上的Selector上移除,然后将其注册到NioEndpoint中NioSelectorPool(默认一个线程一个Selector):这处的注册并不是立刻设置为非阻塞,而是先尝试读/写,如果失败了,再设置为非阻塞,注册,监听事件(一种乐观处理)。PPS:请求处理这一部分的代码没有怎么看懂……    \n热加载/reload()reload()指的就是StandardContext.reload(),会重新创建ClassLoader/Servlet,重新加载/classes/lib。重启Tomcat也是一种reload。webappClassLoader在加载classes/lib时记录了资源的修改时间和数量,同时在ContainerBase中有一个守护线程,定时扫描这些资源,如果发现有任何资源被修改了(modifyTime跟第一次加载时不一致或者类/jar的个数跟第一次加载不一致了),那么就会触发reload()(如果允许的话)进行热加载。reload()中重点是进行资源的清理(清理引用关系防止内存泄漏)1.清理JDBC的引用关系(DriverManager.deregisterDriver())2.拿到JVM内的所有线程并stop掉所有由当前 webappClassLoader加载的线程3.清理ThreadLocalMap中key为null的entry因为之前加载的Class,lib可能无法立即回收,或仍有引用指向加载他们的oldClassLoader(注意:Class对象和加载他的ClassLoader是双向关联的),所以导致这些类无法被卸载(这类问题称为ClassLoader leak),所以频繁的reload可能引发OOM。\n参考JavaDoop的博客Tomcat NIOtomcat架构解析MuleSoftTomcat 源码分析 WebappClassLoader 分析","dateCreated":"2018-08-07T18:20:49+08:00","dateModified":"2018-08-23T11:50:52+08:00","datePublished":"2018-08-07T18:20:49+08:00","description":"Tomcat源码","headline":"Tomcat源码","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tomcat/tomcat.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/08/07/Tomcat源码/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/08/07/Tomcat源码/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tomcat/tomcat.png"}</script>
+    <meta name="description" content="Tomcat源码">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="Tomcat源码">
+<meta property="og:url" content="http://yoursite.com/2018/08/07/Tomcat源码/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Tomcat源码">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Ftomcat_level.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fcatalina.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fprocess_request.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2FclassLoader_level.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fserverxml.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2FStandardServer.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2FStandardEngine.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fpipeline-valve.png">
+<meta property="og:updated_time" content="2018-08-23T03:50:52.325Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Tomcat源码">
+<meta name="twitter:description" content="Tomcat源码">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Ftomcat_level.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tomcat/tomcat.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/tomcat/tomcat.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Tomcat源码
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-08-07T18:20:49+08:00">
+	
+		    8月 07, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->      <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#架构"><span class="toc-text">架构</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#Tomcat整体模块架构"><span class="toc-text">Tomcat整体模块架构</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Catalina架构"><span class="toc-text">Catalina架构</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#Server"><span class="toc-text">Server</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Service"><span class="toc-text">Service</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Connector"><span class="toc-text">Connector</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Container"><span class="toc-text">Container</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#Pipeline-Valve"><span class="toc-text">Pipeline/Valve</span></a></li></ol></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#类加载机制"><span class="toc-text">类加载机制</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#启动"><span class="toc-text">启动</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#解析xml-load"><span class="toc-text">解析xml load()</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#初始化-init"><span class="toc-text">初始化 init()</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#加载应用-start"><span class="toc-text">加载应用 start()</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#HostConfig"><span class="toc-text">HostConfig</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Context启动"><span class="toc-text">Context启动</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Connector启动"><span class="toc-text">Connector启动</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#接收处理请求"><span class="toc-text">接收处理请求</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#热加载-reload"><span class="toc-text">热加载/reload()</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="架构"><a href="#架构" class="headerlink" title="架构"></a>架构</h1><h2 id="Tomcat整体模块架构"><a href="#Tomcat整体模块架构" class="headerlink" title="Tomcat整体模块架构"></a>Tomcat整体模块架构</h2><p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Ftomcat_level.png" alt>   </p>
+<h2 id="Catalina架构"><a href="#Catalina架构" class="headerlink" title="Catalina架构"></a>Catalina架构</h2><p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fcatalina.png" alt>   </p>
+<h3 id="Server"><a href="#Server" class="headerlink" title="Server"></a>Server</h3><p>Server主要担任一个管理者的角色,通过Service数组直接管理Service。也是最顶层的Servlet容器  </p>
+<h3 id="Service"><a href="#Service" class="headerlink" title="Service"></a>Service</h3><p>Service是Container和Connector交流的协调者,用适当的Connector接收并处理请求(IO流解析为request),然后将请求交给Container(处理request,返回response)。  </p>
+<h3 id="Connector"><a href="#Connector" class="headerlink" title="Connector"></a>Connector</h3><p>Connector以协议划分(HTTP1.1/HTTP2.0/AJP),负责监听指定的端口。  </p>
+<h3 id="Container"><a href="#Container" class="headerlink" title="Container"></a>Container</h3><p>Container是一系列类的总称,与Connector对应,按协议不同处理各个的具体的请求。其按照由上至下的顺序是:Engine(处理Connector请求)-&gt;Host(域名,eg:a.qq.com/b.qq.com是两个web应用但应该对应一个Host)-&gt;Context(web应用,ServletContext)-&gt;Wrapper(Servlet)  </p>
+<h4 id="Pipeline-Valve"><a href="#Pipeline-Valve" class="headerlink" title="Pipeline/Valve"></a>Pipeline/Valve</h4><p>Tomcat对于请求的处理采用责任链的模式,每个Container都有一个Pipeline,以及最少一个Valve(EngineValve/HostValve…),请求到达Container(先Engine)后,Valve依次处理,Pipeline的最末端的Valve会将请求再传给Child(Host-&gt;Context-&gt;Wrapper)…依次处理,最终Wrapper处理完后,再逆向返回response。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fprocess_request.png" alt>  </p>
+<h1 id="类加载机制"><a href="#类加载机制" class="headerlink" title="类加载机制"></a>类加载机制</h1><p>每个web应用可能依赖的jar包版本不同,如果使用同一个类加载器加载,就会导致版本覆盖而有web应用无法运行。因此,每一个web应用都应该有一个自己独立的类加载器用来隔离自己依赖的jar包。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2FclassLoader_level.png" alt><br>webappClassLoader主要负责加载WEB-INF/classes,WEB-INT/lib下的类,其不遵守Java的类加载机制,他的加载顺序时<br>1.BootStrap类加载器加载。<br>2.当前类加载器加载(WEB-INF/classes,WEB-INT/lib).<br>3.父类加载器加载(父类加载器遵循Java的类加载机制)</p>
+<h1 id="启动"><a href="#启动" class="headerlink" title="启动"></a>启动</h1><p>启动tomcat(startup.bat/startup.sh)时相当于调用BootStrap.main()方法，并传入”start”参数，<br>首先，tomcat会调用BootStrap的静态代码，主要是new一些关键的File(指定根目录等)，然后实例化Bootstrap对象(bootstrap),并调用init()初始化，init()主要是先设置Tomcat的类加载器(默认commonLoader/catalinaLoader/sharedLoader都是URLClassLoader),再反射实例化一个Catalina对象，并反射调用设置其父加载器为commonLoader(URLClassLoader),然后将该对象赋值给Bootstrap中的catalinaDemon。<br>接下来进入一大堆判断,参数为start,先后反射调用catalinaDemon对象的setAwait(true)(这个await变量目前不知道是什么作用)。  </p>
+<h2 id="解析xml-load"><a href="#解析xml-load" class="headerlink" title="解析xml load()"></a>解析xml load()</h2><p>setAwait()后,调用load()解析server.xml(以如下xml为例),<img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fserverxml.png" alt><br>然后根据配置文件,进行各个对象的实例化。<br>通过结点解析,先实例化Service<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2FStandardServer.png" alt><br>逐级触发父类的实例化,实例化LifeCycleListeners(一个CopyOnWriteArrayList),设置LifeCycleState设置为NEW。<br>再实例化HTTP对应的Connector,触发实例化链:-&gt;Http11NioProtocol-&gt;NioEndpoint。<br>最终实例化出一个持有Http11NioProtocol引用的Connector(对应的协议是HTTP/1.1),并将该connector设置到service中。<br>至此Connector的实例化告一段落。<br>接下来是StanardEngine的实例化<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2FStandardEngine.png" alt><br>在这个过程中首先其父类会实例化一个StandardPipeline,然后Engine会实例化一个StandardEngineValve,并set到pipeline中。  </p>
+<p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Ftomcat%2Fpipeline-valve.png" alt>  </p>
+<p>接下来需要实例化StandardHost,与Engine类似，父类实例化StandardPipeline,Host实例化StandardHostValve。<br>PS:StandardHost中有一个WeakHashMap。注释中的child指的就是context(我们部署的web应用),Map的key是ClassLoader,Value是web应用的ContextPath,同时StandardHost中还有一个内部类(MemoryLeakTrackingListener)。  </p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">/**</span></span><br><span class="line"><span class="comment">    * Track the class loaders for the child web applications so memory leaks</span></span><br><span class="line"><span class="comment">    * can be detected.</span></span><br><span class="line"><span class="comment">    */</span></span><br><span class="line">   <span class="keyword">private</span> <span class="keyword">final</span> Map&lt;ClassLoader, String&gt; childClassLoaders =</span><br><span class="line">           <span class="keyword">new</span> WeakHashMap&lt;&gt;();</span><br></pre></td></tr></table></figure>
+<p>至此server.xml已经解析完毕。StandardServer-&gt;StandardService-&gt;StandardEngine-&gt;StandardHost已经实例化完毕,因为并未在server.xml中直接配置Context,所以直到此时还没有跟部署的web应用有什么关系,但Host对象中有一个HostConfig对象,对于应用部署很重要。  </p>
+<h2 id="初始化-init"><a href="#初始化-init" class="headerlink" title="初始化 init()"></a>初始化 init()</h2><p>接下来回到最开始实例化的Catalina的load方法中,调用server.init()(这是一个很长的调用链,不但会init其子容器,还会在多个父类间来回跳)。<br>init的第一步都是设置LifecycleState.INITIALIZING,这个init()调用链关注重点在Connector的init(调用NioEndpoint.bind()), 该方法中实例化ServerSocketChannel,实例化一个以poller线程数为值的CountDownLatch………  </p>
+<h2 id="加载应用-start"><a href="#加载应用-start" class="headerlink" title="加载应用 start()"></a>加载应用 start()</h2><p>接下来回到BootStrap中,反射调用catalina.start()-&gt;server.start()。  </p>
+<h3 id="HostConfig"><a href="#HostConfig" class="headerlink" title="HostConfig"></a>HostConfig</h3><p>Host内拥有一个HostConfig实例,当Host启动时,HostConfig会自动进行应用部署(默认在webapps下)实例化Context对象-&gt;调用HostConfig.deployDirectories(),这里使用了线程池部署。<br>此处会创建Context对象(注意:如果是war包部署,此时还没有解压),并为其创建设置ContextConfig对象。<br>PS:这里尚不清楚具体是如何找到spring的,这时看到控制台输出”Spring WebApplicationInitializers detected on classpath”。<br>并且deployDirectories()使用了FutureTask,debug貌似显示的是当调用future.get()时会触发servlet(wrapper)的实例化,DispatchServlet应该就是这时被触发,不过start时不止一个线程在工作,可能是debug时没看清..<br>接下来遍历webapps并实例化相应的StandardContext  </p>
+<h3 id="Context启动"><a href="#Context启动" class="headerlink" title="Context启动"></a>Context启动</h3><p>无论是何种部署方式,此时Context对象已经创建,但他还没有init,所以需要调用init(),在init后,start前,会调用ContextConfig.fixDocBase()解压war包(如果需要的话),然后进入Context真正的启动步骤。<br>Context的启动会创建webappLoader,webAppClassLoader等一系列资源。<br>Context启动子节点之前,会再次回到ContextConfig,进行web.xml解析-&gt;实例化Servlet-&gt;初始化web容器等一系列操作(spring就是在此处启动)<br>PS:对于SpingBoot应用,web.xml并没有像传统的spring应用一样配置ContextLoaderListener,而是如下方式,但是在Application入口类中有实现WebApplicationInitializer(这个接口与Spring容器的初始化又是什么关系？)<br><figure class="highlight xml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="tag">&lt;<span class="name">web-app</span>&gt;</span></span><br><span class="line">    <span class="tag">&lt;<span class="name">display-name</span>&gt;</span>Archetype Created Web Application<span class="tag">&lt;/<span class="name">display-name</span>&gt;</span></span><br><span class="line"><span class="tag">&lt;/<span class="name">web-app</span>&gt;</span></span><br></pre></td></tr></table></figure></p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">Application</span> <span class="keyword">extends</span> <span class="title">SpringBootServletInitializer</span></span>&#123;</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span><span class="params">(String[] args)</span> </span>&#123;</span><br><span class="line">        <span class="comment">// 程序启动入口</span></span><br><span class="line">        <span class="comment">// 启动嵌入式的 Tomcat 并初始化 Spring 环境及其各 Spring 组件</span></span><br><span class="line">        SpringApplication.run(Application.class, args);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="meta">@Override</span></span><br><span class="line">    <span class="function"><span class="keyword">protected</span> SpringApplicationBuilder <span class="title">configure</span><span class="params">(SpringApplicationBuilder builder)</span> </span>&#123;</span><br><span class="line">        <span class="keyword">return</span> builder.sources(Application.class);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h3 id="Connector启动"><a href="#Connector启动" class="headerlink" title="Connector启动"></a>Connector启动</h3><p>Connector启动首先会启动EndPoint,接下来会调用NioEndpoint的start方法,创建线程池,然后实例化Poller线程并启动,然后实例化Acceptor线程并启动。  </p>
+<p>至此Tomcat已经启动完毕。  </p>
+<h1 id="接收处理请求"><a href="#接收处理请求" class="headerlink" title="接收处理请求"></a>接收处理请求</h1><p>Acceptor&amp;Poller<br>Acceptor是一个与EndPoint生命周期类似的类,他的run方法主要的工作就是serverSocket.accept(),当有一个新的连接进入时调用setSocketOptions()进行一些新连接的处理(设置为非阻塞/为socket创建读写Buffer/将socket和Buffer封装为NioChannel),最终随机获得一个Poller并调用Poller.register(channel)。  </p>
+<p>Poller内有一个selector和装有PollerEvent实例的SynchronizedQueue。<br>register()先将Acceptor传入的channel封装为一个NioSocketWrapper并将wrapper中的intrestOps设置为读事件,再封装为PollerEvent对象并加入到队列中。<br>Poller的run方法主要内容就是循环调用events(),events()将队列中的所有PollerEvent弹出先调用其run()。  </p>
+<p>PollerEvent.run()主要是将新注册的event中的socketChannel注册到Poller的selector上,监听READ事件。  </p>
+<p>PS:如果不是新注册的/else逻辑没有看懂…<br>回到Poller的run(),调用完events()后,遍历selector.selectedKeys()拿到selectionKey(run()中并不判断key是可读还是可写)和key.attachment(NioSocketWrapper)然后移除key,调用Poller.processKey()处理socket(NioEndpoint和其父类之间跳),其主要做法就是将socket包装为SocketProcessor并提交给线程池去处理,SocketProcessor会调用CoyoteAdapter.service()进行具体的request解析,然后通过前面说过的责任链逐层处理请求并返回response。<br>PS:当注册到Poller上的Selector的socket可读时,由于Tomcat是多线程的,所以为防止多线程竞争处理这个socket,需要把这个socket从Poller上的Selector上移除,然后将其注册到NioEndpoint中NioSelectorPool(默认一个线程一个Selector):<br>这处的注册并不是立刻设置为非阻塞,而是先尝试读/写,如果失败了,再设置为非阻塞,注册,监听事件(一种乐观处理)。<br>PPS:请求处理这一部分的代码没有怎么看懂……    </p>
+<h1 id="热加载-reload"><a href="#热加载-reload" class="headerlink" title="热加载/reload()"></a>热加载/reload()</h1><p>reload()指的就是StandardContext.reload(),会重新创建ClassLoader/Servlet,重新加载/classes/lib。重启Tomcat也是一种reload。<br>webappClassLoader在加载classes/lib时记录了资源的修改时间和数量,同时在ContainerBase中有一个守护线程,定时扫描这些资源,如果发现有任何资源被修改了(modifyTime跟第一次加载时不一致或者类/jar的个数跟第一次加载不一致了),那么就会触发reload()(如果允许的话)进行热加载。<br>reload()中重点是进行资源的清理(清理引用关系防止内存泄漏)<br>1.清理JDBC的引用关系(DriverManager.deregisterDriver())<br>2.拿到JVM内的所有线程并stop掉所有由当前 webappClassLoader加载的线程<br>3.清理ThreadLocalMap中key为null的entry<br>因为之前加载的Class,lib可能无法立即回收,或仍有引用指向加载他们的oldClassLoader(注意:Class对象和加载他的ClassLoader是双向关联的),所以导致这些类无法被卸载(这类问题称为ClassLoader leak),所以频繁的reload可能引发OOM。</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://javadoop.com/" target="_blank" rel="noopener">JavaDoop的博客</a><br><a href="https://www.cnblogs.com/z941030/p/8796479.html" target="_blank" rel="noopener">Tomcat NIO</a><br><a href="http://www.ituring.com.cn/book/1957" target="_blank" rel="noopener">tomcat架构解析</a><br><a href="https://www.mulesoft.com/tcat/tomcat-reload" target="_blank" rel="noopener">MuleSoft</a><br><a href="https://www.jianshu.com/p/269f60fa481e" target="_blank" rel="noopener">Tomcat 源码分析 WebappClassLoader 分析</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/09/Java多线程1/" data-tooltip="Java多线程(一)" aria-label="上一篇: Java多线程(一)">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报6-MySQL备份系统项目/" data-tooltip="周报6 MySQL备份系统项目" aria-label="下一篇: 周报6 MySQL备份系统项目">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/09/Java多线程1/" data-tooltip="Java多线程(一)" aria-label="上一篇: Java多线程(一)">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报6-MySQL备份系统项目/" data-tooltip="周报6 MySQL备份系统项目" aria-label="下一篇: 周报6 MySQL备份系统项目">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

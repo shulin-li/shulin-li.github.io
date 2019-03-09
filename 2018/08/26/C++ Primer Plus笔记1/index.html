@@ -1,0 +1,394 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>C++Primer Plus读书笔记(一) - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n前面的话由于时间很赶,所以这本书看的很快,但是自己记忆力又不好,所以很多东西可能也忘得很快(就在我写笔记的时候,我能感觉得到,我的知识正在快速流逝…….巨恐怖),所以写一些读书笔记方便复习。另外, 本读书笔记按照阅读时间线而不是读完之后再总结,所以可能有一些问题在后几章的时候已经得到了解答,甚至注入cout/cin可能会出现在好几章中(没办法,书内容就是这么安排的);其次,读这本书算是我第一次真正接触C++,所以笔记的技术含量几乎没有(而且还有丶流水账),而且会记录一些并不一定独属于C++的内容……最后由于原先是学Java的,所以在学习C++的时候难免将C++的各个知识点,语法和Java进行类比,这一行为可能在C++程序员看来很蠢……  \n第一章代码的最终运行编译:首先编译器将源代码编译为目标代码。链接:链接程序将目标代码和C++库函数的代码以及一些标准的启动代码组合起来生成最终的可执行代码。  \n第二章基础main函数与Java类似,C++也需要一个main函数做入口,这个函数会被启动代码调用,与Java不同的是他的返回值和参数好像并没有强制要求(警告而非错误)。一些动态链接库可以没有main函数。  \n预处理器预处理器主要用于对源文件进行编译前的处理。  \n#include该编译指令导致预处理器将某些文件(有点像是jar包?)的内容添加到程序中,随后文件内容和源代码一起被交给编译器。  \n头文件包含文件或头文件支持一系列实现好的特定的工具,可以通过include指令包含在其他程序中,C++的头文件没有扩展名,其可以包含名称空间。  \n名称空间很像Java中的包名,# include 后还需通过using namespace std引入名称空间使得iostream中的定义可用,using namespace可以位于某个函数内(只在该函数内生效),也可以位于函数外(当前程序内生效),也可以通过std::xxx引用名称空间的具体的定义。  \nC++语句cout/cin这两个是定义在iostream中的对象,是对于IO流的一种抽象。cout &lt;&lt; 和 cin &gt;&gt;可以根据要输出/输入的变量的类型自动进行转换。eg:int类型的打印时会将整数转换为字符串,cin &gt;&gt; 也会根据要操作的变量自动转换键盘输入的类型。  \n函数C++要求为程序中使用的所有函数提供原型(使用头文件内的函数则不需要),以分号结尾并放在main函数前面,函数同Java一样,支持重载。  \n第三章简单变量变量名称以单双下划线开头的变量名称是保留名称(什么意思?),不建议使用,与Java不同,C++似乎更常用下划线分割单词而不是用驼峰标识。  \n整形C++没有对short/int/long/long long的长度进行硬性规定,而只是规定short至少16位,int至少与short一样,long至少32位且至少与int一样,long long至少64位且至少与long一样(本机测试长度分别为16,32,32,64)。  \n初始化C++变量的初始化不同于Java,如果没有初始化,变量的值就是该变量所在内存中的旧值,无法预测,而不会像Java那样进行诸如0的自动初始化。C++可以使用大括号来初始化任何类型,eg: int a {1},如果使用大括号而没有指定值,那么默认初始化为0;  \n值的溢出对于整形的溢出,他会回到另一端的极值。1234short a = SHRT_MAX //climts头文件中定义的short类型的最大值:32767//cout &lt;&lt; a+1 &lt;&lt; endl; //Aa = a + 1;cout &lt;&lt; a &lt;&lt; endl;//输出-32678\n目前我奇怪的是,对于A处的输出方式,最终输出的是32678,即超过了short的界限,猜测是cout自动提升了类型……  \n整形字面值C++可以接受8/10/16进制,分别以1-9/0/0x开头,可以使用cout &lt;&lt; oct/hex使得cout能够将一个数字以8/16进制输出。  \n常量类型确认对于整形除非超过范围,否则默认为int。  \nchar/wcha_tchar类型在内存中以数字存储,其可以进行+-操作,cin/cout在进行操作时会自动转换。char只有一个字节无法表示汉字,wcha_t两个字节可以用来表示汉字,由于cin/cout将输入输出看做char流,所以无法处理wcha_t,iostream提供了wcin/wcout。在赋值时,要通过L来指示宽字符常量。1234wchar_t a = L'测';setlocale(LC_ALL, \"chs\");//因为wcout默认不输出中文,所以这里要进行设置(具体设置的是什么目前我也不知道......)wcout &lt;&lt; a;cin.get();\n感觉在输出汉字这方面,C++要比Java麻烦不少,Java的char默认采用的就是Unicode,输出方面也不需要setlocale(这个设置目前还不知道在设置什么),另外吐槽一下,vs2017对于“UTF-8“的支持太不上心了吧……  \nconst在声明变量方面,有点类似于Java的final,一旦初始化,不允许更改,谷歌风格指南中建议const变量名以k开头。  \n浮点数浮点类型C++有float/double/long double三种浮点类型,对于浮点数,默认以double存储,可以通过f/F/l/L制定存储方式。  \n算术运算符类型转换C++支持函数传参时的自动类型转化,12345678910int main()&#123;\ttest4(4.0);&#125;void test4(int a )&#123;\tcout &lt;&lt; a;\tcin.get();&#125;\n它会产生警告但不报错。对于强制类型转化,C++提供一种函数调用形式的转化:”typename (value)”,这种设计感觉逻辑上更加清楚,好于Java。  \nauto声明auto是一个关键字,他可以根据初始值的类型推断变量的类型,在处理复杂类型时很有用。  \n第四章数组初始化数组初始化时可以只初始化部分元素,编译器将其他元素设置为0,如果大括号初始化时不包含任何元素所有的元素都会被置为0。  \n字符串C风格字符串C风格字符串必须以空字符‘\\0‘结尾,cout输出字符串时直到遇见’\\0‘才停止,另外C++的输入工具读取键盘输入到char数组时会自动加上空字符,双引号内的字符默认以空字符结尾,“S”表示两个字符:’S‘和’\\0‘。  \n字符串拼接拼接字符串时,第二个字符串的第一个字符自动取代第二个字符串的空字符。  \n字符串输入cin使用空格/制表符/换行符来确定输入字符串的结束位置。cin提供了getline/get两个函数用于读取一行输入直到换行符并自动补全空字符,不同的是getline读取后会将换行符丢弃,get则会将换行符留在输入流中,由于这个性质,使用get进行两次读取间需要插入一个get用于读取换行符。cin.getling()/get()都会返回一个cin对象。  \nstring类string类在头文件string中,可以使用访问数组的方式访问string对象中的字符。  \n赋值/拼接/附加可以将一个string对象赋值给另一个string对象,而且属于值复制(深拷贝?)。12345string one = \"test\";string two = one;cout &lt;&lt; &amp;one &lt;&lt; endl;cout &lt;&lt; &amp;two &lt;&lt; endl; //地址不一样,应该等同于Java中的深拷贝?cin.get();\n原始字符串raw原始字符串中字符就表示本身,\\n不再表示换行,其使用“(和)”作为定界符,并使用前缀R标识,另外语法允许在“和(之间加入其它字符来重新设置定界符。12cout &lt;&lt; R\",(test raw \"(\" \\n),\";//test raw \"(\" \\ncin.get();\n结构创建结构首相要定义结构描述,然后创建结构变量。123456struct employee //定义了一种叫做employee的数据格式&#123;\tint age;\tstring name;&#125;;employee  Tom;\n定义结构描述可以放在main前面,所有函数都可以使用,也可以定义在函数内。  \n共用体共用体是一种数据格式,它能够存储不同的数据类型,但任一时间内它只能存储其中的一种类型。12345678910union test&#123;  int  int_val;  long long_val;  double double_val;&#125;;test one;one.int_val = 4;//此时共用体内存储的就是int值one.double_val = 1.45;//此时存储的是double值,int值已经丢失\n共用体主要是为了应对”数据量唯一,格式不唯一“的情况,同时可以节省存储空间。同时共用体可以声明在结构体内部并不需要名称(匿名共用体)。  \n枚举12345enum test &#123;one,two,three&#125;;test more;more = one;cout&lt;&lt;more&lt;&lt;endl;//输出0\n虽然枚举的符号常量对应着整数值,但是不能对其进行+-运算,或者说进行+-运算时枚举量被提升为int,同时枚举量的值可以使用赋值运算符显式指定。12enum test&#123;one = 1,four = 4,eight = 8&#125;;enum test_two&#123;one,four=4,five&#125;//five默认是four的值+1=5;\n指针和自由存储空间地址运算符&amp;可以获得一个变量的地址,*可以获得一个指针变量存储的地址值所指向的值(……)  \nnew分配内存/delete释放内存123typeName* pointer_name = new typeNmae;int* pointer = new int;delete pointer;//释放pointer指向的内存,但不会删除pointer本身\n不用delete同一个内存块两次,delete只能用来释放new分配的内存。  \nnew创建数组12int* psome = new int[10];//psome指向数组中第一个元素的地址delete [] psome;//[]表示释放的是整个数组的内存而不是psome指向的元素的内存\n在操作数组时,指针和数组名等效,psome[1]指向的就是第二个元素,指针可以进行+-运算,psome = psome+1;表示的psome指向的是第二个元素的地址。  \n指针,数组和指针算术123456short test[10];cout &lt;&lt; test&lt;&lt; endl;//00AFFD9Ccout &lt;&lt; &amp;test&lt;&lt; endl;//00AFFD9Ccout &lt;&lt; test+1 &lt;&lt; endl;//00AFFD9Ecout &lt;&lt; &amp;test +1&lt;&lt; endl;//00AFFDB0\ntest和&amp;test的值都是一样的,但数组名被解释为第一个元素的地址,所以对其+1表示的是下一个元素的地址,&amp;test被解释为整个数组的地址,对其+1表示的是下一个这么大的数组的地址。  \n指针和字符串如果给cout提供一个字符的地址,他将从该字符起打印直到遇到空字符。C++中用双引号括起来的字符串像数组一样,也是第一个元素的地址。1cout &lt;&lt; \"test\" &lt;&lt; endl;//将t的地址发给cout,cout进行打印\n自动存储,静态存储,动态存储在函数内部定义的常规变量使用自动存储,称其为自动变量(栈变量),在函数被调用时,自动生,函数结束时消亡,有丶像Java中的局部变量。静态存储是整个程序执行期间都存在的存储方式可以将其声明在函数外面,也可以使用static关键字。C++内部管理了一个内储存池,称之为自由存储空间或堆,new/delete操作内存就是内存池中的内存,如果不delete,即使由于作用域等原因导致指针包含指针的内存被释放,但内存池中的内存也不会被释放。  \n数组的替代品vectorvector对象在插入或添加值时可以自动调整长度。1vector&lt;typeName&gt; variable_name(element_number)\narray1array&lt;typeName,element_number&gt; variable_name\narray对象和数组对象分配在栈上,vector分配在堆上,array对象也可以进行赋值(值拷贝),同时C++并不检查数组的下标越界问题。  \n第五章for循环复合语句如果在一个语句块中声明一个变量,外部语句块也有这个名称的变量,那么从声明位置到内部语句块结束的范围之内,新变量会隐藏旧变量。1234567891011int main()&#123;  using namespace std;  int x = 20;  &#123;    cout &lt;&lt; x &lt;&lt; endl;//20;    int x = 10;    cout &lt;&lt; x &lt;&lt; endl;//10;  &#125;  cout &lt;&lt; x &lt;&lt; endl;//20;&#125;\n逗号运算符逗号运算符确保先计算第一个表达式然后计算第二个表达式(顺序点),逗号表达式的值是第二部分的值。12int x = (10, 20);cout &lt;&lt; x &lt;&lt; endl;//20\n字符串的比较对于char数组形式的字符串之间的比较如果使用==比较的是地址,应该使用如果希望比较内容,应该使用strcmp函数(Java的compare方法)。string对象的比较是在比较内容而不是地址,它使用了重载操作符(!=/=\\=),他要求比较的两个对象中至少有一个为string对象。  \nIO文件尾条件当检测到EOF后,cin将eofbit和failbit都置为1,可以通过eof()/fail()函数进行检测。当cin检测测到EOF后,cin将不再读取输入,此时需要调用cin.clear()清除EOF标记。istream类提供了可以将istream对象(eg:cin)转换为bool值的方法,如果最后一次读取成功了,返回true,反之。 ","dateCreated":"2018-08-26T17:11:35+08:00","dateModified":"2018-08-26T17:11:50+08:00","datePublished":"2018-08-26T17:11:35+08:00","description":"读书笔记(一):1-6章","headline":"C++Primer Plus读书笔记(一)","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/c%2B%2B/c%2B%2B.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/08/26/C++ Primer Plus笔记1/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/08/26/C++ Primer Plus笔记1/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/c%2B%2B/c%2B%2B.png"}</script>
+    <meta name="description" content="读书笔记(一):1-6章">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="C++Primer Plus读书笔记(一)">
+<meta property="og:url" content="http://yoursite.com/2018/08/26/C++ Primer Plus笔记1/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="读书笔记(一):1-6章">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2018-08-26T09:11:50.146Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="C++Primer Plus读书笔记(一)">
+<meta name="twitter:description" content="读书笔记(一):1-6章">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/c%2B%2B/c%2B%2B.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/c%2B%2B/c%2B%2B.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            C++Primer Plus读书笔记(一)
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-08-26T17:11:35+08:00">
+	
+		    8月 26, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt --><p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#前面的话"><span class="toc-text">前面的话</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#第一章"><span class="toc-text">第一章</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#代码的最终运行"><span class="toc-text">代码的最终运行</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#第二章"><span class="toc-text">第二章</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#基础"><span class="toc-text">基础</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#main函数"><span class="toc-text">main函数</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#预处理器"><span class="toc-text">预处理器</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#include"><span class="toc-text">#include</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#头文件"><span class="toc-text">头文件</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#名称空间"><span class="toc-text">名称空间</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#C-语句"><span class="toc-text">C++语句</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#cout-cin"><span class="toc-text">cout/cin</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#函数"><span class="toc-text">函数</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#第三章"><span class="toc-text">第三章</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#简单变量"><span class="toc-text">简单变量</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#变量名称"><span class="toc-text">变量名称</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#整形"><span class="toc-text">整形</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#初始化"><span class="toc-text">初始化</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#值的溢出"><span class="toc-text">值的溢出</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#整形字面值"><span class="toc-text">整形字面值</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#常量类型确认"><span class="toc-text">常量类型确认</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#char-wcha-t"><span class="toc-text">char/wcha_t</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#const"><span class="toc-text">const</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#浮点数"><span class="toc-text">浮点数</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#浮点类型"><span class="toc-text">浮点类型</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#算术运算符"><span class="toc-text">算术运算符</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#类型转换"><span class="toc-text">类型转换</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#auto声明"><span class="toc-text">auto声明</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#第四章"><span class="toc-text">第四章</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#数组"><span class="toc-text">数组</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#初始化-1"><span class="toc-text">初始化</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#字符串"><span class="toc-text">字符串</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#C风格字符串"><span class="toc-text">C风格字符串</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#字符串拼接"><span class="toc-text">字符串拼接</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#字符串输入"><span class="toc-text">字符串输入</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#string类"><span class="toc-text">string类</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#赋值-拼接-附加"><span class="toc-text">赋值/拼接/附加</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#原始字符串raw"><span class="toc-text">原始字符串raw</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#结构"><span class="toc-text">结构</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#共用体"><span class="toc-text">共用体</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#枚举"><span class="toc-text">枚举</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#指针和自由存储空间"><span class="toc-text">指针和自由存储空间</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#new分配内存-delete释放内存"><span class="toc-text">new分配内存/delete释放内存</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#new创建数组"><span class="toc-text">new创建数组</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#指针-数组和指针算术"><span class="toc-text">指针,数组和指针算术</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#指针和字符串"><span class="toc-text">指针和字符串</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#自动存储-静态存储-动态存储"><span class="toc-text">自动存储,静态存储,动态存储</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#数组的替代品"><span class="toc-text">数组的替代品</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#vector"><span class="toc-text">vector</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#array"><span class="toc-text">array</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#第五章"><span class="toc-text">第五章</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#for循环"><span class="toc-text">for循环</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#复合语句"><span class="toc-text">复合语句</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#逗号运算符"><span class="toc-text">逗号运算符</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#字符串的比较"><span class="toc-text">字符串的比较</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#IO"><span class="toc-text">IO</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#文件尾条件"><span class="toc-text">文件尾条件</span></a></li></ol></li></ol></li></ol>
+<h1 id="前面的话"><a href="#前面的话" class="headerlink" title="前面的话"></a>前面的话</h1><p>由于时间很赶,所以这本书看的很快,但是自己记忆力又不好,所以很多东西可能也忘得很快(就在我写笔记的时候,我能感觉得到,我的知识正在快速流逝…….巨恐怖),所以写一些读书笔记方便复习。<br>另外, 本读书笔记按照阅读时间线而不是读完之后再总结,所以可能有一些问题在后几章的时候已经得到了解答,甚至注入cout/cin可能会出现在好几章中(没办法,书内容就是这么安排的);<br>其次,读这本书算是我第一次真正接触C++,所以笔记的技术含量几乎没有(而且还有丶流水账),而且会记录一些并不一定独属于C++的内容……<br>最后由于原先是学Java的,所以在学习C++的时候难免将C++的各个知识点,语法和Java进行类比,这一行为可能在C++程序员看来很蠢……  </p>
+<h1 id="第一章"><a href="#第一章" class="headerlink" title="第一章"></a>第一章</h1><h2 id="代码的最终运行"><a href="#代码的最终运行" class="headerlink" title="代码的最终运行"></a>代码的最终运行</h2><p>编译:首先编译器将源代码编译为目标代码。<br>链接:链接程序将目标代码和C++库函数的代码以及一些标准的启动代码组合起来生成最终的可执行代码。  </p>
+<h1 id="第二章"><a href="#第二章" class="headerlink" title="第二章"></a>第二章</h1><h2 id="基础"><a href="#基础" class="headerlink" title="基础"></a>基础</h2><h3 id="main函数"><a href="#main函数" class="headerlink" title="main函数"></a>main函数</h3><p>与Java类似,C++也需要一个main函数做入口,这个函数会被启动代码调用,与Java不同的是他的返回值和参数好像并没有强制要求(警告而非错误)。一些动态链接库可以没有main函数。  </p>
+<h3 id="预处理器"><a href="#预处理器" class="headerlink" title="预处理器"></a>预处理器</h3><p>预处理器主要用于对源文件进行编译前的处理。  </p>
+<h3 id="include"><a href="#include" class="headerlink" title="#include"></a>#include</h3><p>该编译指令导致预处理器将某些文件(有点像是jar包?)的内容添加到程序中,随后文件内容和源代码一起被交给编译器。  </p>
+<h3 id="头文件"><a href="#头文件" class="headerlink" title="头文件"></a>头文件</h3><p>包含文件或头文件支持一系列实现好的特定的工具,可以通过include指令包含在其他程序中,C++的头文件没有扩展名,其可以包含名称空间。  </p>
+<h3 id="名称空间"><a href="#名称空间" class="headerlink" title="名称空间"></a>名称空间</h3><p>很像Java中的包名,# include <iostream>后还需通过using namespace std引入名称空间使得iostream中的定义可用,using namespace可以位于某个函数内(只在该函数内生效),也可以位于函数外(当前程序内生效),也可以通过std::xxx引用名称空间的具体的定义。  </iostream></p>
+<h2 id="C-语句"><a href="#C-语句" class="headerlink" title="C++语句"></a>C++语句</h2><h3 id="cout-cin"><a href="#cout-cin" class="headerlink" title="cout/cin"></a>cout/cin</h3><p>这两个是定义在iostream中的对象,是对于IO流的一种抽象。<br>cout &lt;&lt; 和 cin &gt;&gt;可以根据要输出/输入的变量的类型自动进行转换。eg:int类型的打印时会将整数转换为字符串,cin &gt;&gt; 也会根据要操作的变量自动转换键盘输入的类型。  </p>
+<h2 id="函数"><a href="#函数" class="headerlink" title="函数"></a>函数</h2><p>C++要求为程序中使用的所有函数提供原型(使用头文件内的函数则不需要),以分号结尾并放在main函数前面,函数同Java一样,支持重载。  </p>
+<h1 id="第三章"><a href="#第三章" class="headerlink" title="第三章"></a>第三章</h1><h2 id="简单变量"><a href="#简单变量" class="headerlink" title="简单变量"></a>简单变量</h2><h3 id="变量名称"><a href="#变量名称" class="headerlink" title="变量名称"></a>变量名称</h3><p>以单双下划线开头的变量名称是保留名称(什么意思?),不建议使用,与Java不同,C++似乎更常用下划线分割单词而不是用驼峰标识。  </p>
+<h3 id="整形"><a href="#整形" class="headerlink" title="整形"></a>整形</h3><p>C++没有对short/int/long/long long的长度进行硬性规定,而只是规定short至少16位,int至少与short一样,long至少32位且至少与int一样,long long至少64位且至少与long一样(本机测试长度分别为16,32,32,64)。  </p>
+<h3 id="初始化"><a href="#初始化" class="headerlink" title="初始化"></a>初始化</h3><p>C++变量的初始化不同于Java,如果没有初始化,变量的值就是该变量所在内存中的旧值,无法预测,而不会像Java那样进行诸如0的自动初始化。<br>C++可以使用大括号来初始化任何类型,eg: int a {1},如果使用大括号而没有指定值,那么默认初始化为0;  </p>
+<h3 id="值的溢出"><a href="#值的溢出" class="headerlink" title="值的溢出"></a>值的溢出</h3><p>对于整形的溢出,他会回到另一端的极值。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">short</span> a = SHRT_MAX <span class="comment">//climts头文件中定义的short类型的最大值:32767</span></span><br><span class="line"><span class="comment">//cout &lt;&lt; a+1 &lt;&lt; endl; //A</span></span><br><span class="line">a = a + <span class="number">1</span>;</span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; a &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//输出-32678</span></span><br></pre></td></tr></table></figure></p>
+<p>目前我奇怪的是,对于A处的输出方式,最终输出的是32678,即超过了short的界限,猜测是cout自动提升了类型……  </p>
+<h3 id="整形字面值"><a href="#整形字面值" class="headerlink" title="整形字面值"></a>整形字面值</h3><p>C++可以接受8/10/16进制,分别以1-9/0/0x开头,可以使用cout &lt;&lt; oct/hex使得cout能够将一个数字以8/16进制输出。  </p>
+<h3 id="常量类型确认"><a href="#常量类型确认" class="headerlink" title="常量类型确认"></a>常量类型确认</h3><p>对于整形除非超过范围,否则默认为int。  </p>
+<h3 id="char-wcha-t"><a href="#char-wcha-t" class="headerlink" title="char/wcha_t"></a>char/wcha_t</h3><p>char类型在内存中以数字存储,其可以进行+-操作,cin/cout在进行操作时会自动转换。<br>char只有一个字节无法表示汉字,wcha_t两个字节可以用来表示汉字,由于cin/cout将输入输出看做char流,所以无法处理wcha_t,iostream提供了wcin/wcout。<br>在赋值时,要通过L来指示宽字符常量。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">wchar_t</span> a = L'测<span class="string">';</span></span><br><span class="line">setlocale(LC_ALL, "chs");//因为wcout默认不输出中文,所以这里要进行设置(具体设置的是什么目前我也不知道......)</span><br><span class="line">wcout &lt;&lt; a;</span><br><span class="line"><span class="built_in">cin</span>.get();</span><br></pre></td></tr></table></figure></p>
+<p>感觉在输出汉字这方面,C++要比Java麻烦不少,Java的char默认采用的就是Unicode,输出方面也不需要setlocale(这个设置目前还不知道在设置什么),另外吐槽一下,vs2017对于“UTF-8“的支持太不上心了吧……  </p>
+<h2 id="const"><a href="#const" class="headerlink" title="const"></a>const</h2><p>在声明变量方面,有点类似于Java的final,一旦初始化,不允许更改,谷歌风格指南中建议const变量名以k开头。  </p>
+<h2 id="浮点数"><a href="#浮点数" class="headerlink" title="浮点数"></a>浮点数</h2><h3 id="浮点类型"><a href="#浮点类型" class="headerlink" title="浮点类型"></a>浮点类型</h3><p>C++有float/double/long double三种浮点类型,对于浮点数,默认以double存储,可以通过f/F/l/L制定存储方式。  </p>
+<h2 id="算术运算符"><a href="#算术运算符" class="headerlink" title="算术运算符"></a>算术运算符</h2><h3 id="类型转换"><a href="#类型转换" class="headerlink" title="类型转换"></a>类型转换</h3><p>C++支持函数传参时的自动类型转化,<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">	test4(<span class="number">4.0</span>);</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">test4</span><span class="params">(<span class="keyword">int</span> a )</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">	<span class="built_in">cout</span> &lt;&lt; a;</span><br><span class="line">	<span class="built_in">cin</span>.get();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>它会产生警告但不报错。对于强制类型转化,C++提供一种函数调用形式的转化:”typename (value)”,这种设计感觉逻辑上更加清楚,好于Java。  </p>
+<h3 id="auto声明"><a href="#auto声明" class="headerlink" title="auto声明"></a>auto声明</h3><p>auto是一个关键字,他可以根据初始值的类型推断变量的类型,在处理复杂类型时很有用。  </p>
+<h1 id="第四章"><a href="#第四章" class="headerlink" title="第四章"></a>第四章</h1><h2 id="数组"><a href="#数组" class="headerlink" title="数组"></a>数组</h2><h3 id="初始化-1"><a href="#初始化-1" class="headerlink" title="初始化"></a>初始化</h3><p>数组初始化时可以只初始化部分元素,编译器将其他元素设置为0,如果大括号初始化时不包含任何元素所有的元素都会被置为0。  </p>
+<h2 id="字符串"><a href="#字符串" class="headerlink" title="字符串"></a>字符串</h2><h3 id="C风格字符串"><a href="#C风格字符串" class="headerlink" title="C风格字符串"></a>C风格字符串</h3><p>C风格字符串必须以空字符‘\0‘结尾,cout输出字符串时直到遇见’\0‘才停止,另外C++的输入工具读取键盘输入到char数组时会自动加上空字符,双引号内的字符默认以空字符结尾,“S”表示两个字符:’S‘和’\0‘。  </p>
+<h3 id="字符串拼接"><a href="#字符串拼接" class="headerlink" title="字符串拼接"></a>字符串拼接</h3><p>拼接字符串时,第二个字符串的第一个字符自动取代第二个字符串的空字符。  </p>
+<h3 id="字符串输入"><a href="#字符串输入" class="headerlink" title="字符串输入"></a>字符串输入</h3><p>cin使用空格/制表符/换行符来确定输入字符串的结束位置。<br>cin提供了getline/get两个函数用于读取一行输入直到换行符并自动补全空字符,不同的是getline读取后会将换行符丢弃,get则会将换行符留在输入流中,由于这个性质,使用get进行两次读取间需要插入一个get用于读取换行符。<br>cin.getling()/get()都会返回一个cin对象。  </p>
+<h2 id="string类"><a href="#string类" class="headerlink" title="string类"></a>string类</h2><p>string类在头文件string中,可以使用访问数组的方式访问string对象中的字符。  </p>
+<h3 id="赋值-拼接-附加"><a href="#赋值-拼接-附加" class="headerlink" title="赋值/拼接/附加"></a>赋值/拼接/附加</h3><p>可以将一个string对象赋值给另一个string对象,而且属于值复制(深拷贝?)。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">string</span> one = <span class="string">"test"</span>;</span><br><span class="line"><span class="built_in">string</span> two = one;</span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; &amp;one &lt;&lt; <span class="built_in">endl</span>;</span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; &amp;two &lt;&lt; <span class="built_in">endl</span>; <span class="comment">//地址不一样,应该等同于Java中的深拷贝?</span></span><br><span class="line"><span class="built_in">cin</span>.get();</span><br></pre></td></tr></table></figure></p>
+<h3 id="原始字符串raw"><a href="#原始字符串raw" class="headerlink" title="原始字符串raw"></a>原始字符串raw</h3><p>原始字符串中字符就表示本身,\n不再表示换行,其使用“(和)”作为定界符,并使用前缀R标识,另外语法允许在“和(之间加入其它字符来重新设置定界符。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cout</span> &lt;&lt; <span class="string">R",(test raw "(" \n),"</span>;<span class="comment">//test raw "(" \n</span></span><br><span class="line"><span class="built_in">cin</span>.get();</span><br></pre></td></tr></table></figure></p>
+<h2 id="结构"><a href="#结构" class="headerlink" title="结构"></a>结构</h2><p>创建结构首相要定义结构描述,然后创建结构变量。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">employee</span> //定义了一种叫做<span class="title">employee</span>的数据格式</span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">	<span class="keyword">int</span> age;</span><br><span class="line">	<span class="built_in">string</span> name;</span><br><span class="line">&#125;;</span><br><span class="line">employee  Tom;</span><br></pre></td></tr></table></figure></p>
+<p>定义结构描述可以放在main前面,所有函数都可以使用,也可以定义在函数内。  </p>
+<h2 id="共用体"><a href="#共用体" class="headerlink" title="共用体"></a>共用体</h2><p>共用体是一种数据格式,它能够存储不同的数据类型,但任一时间内它只能存储其中的一种类型。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">union</span> test</span><br><span class="line">&#123;</span><br><span class="line">  <span class="keyword">int</span>  int_val;</span><br><span class="line">  <span class="keyword">long</span> long_val;</span><br><span class="line">  <span class="keyword">double</span> double_val;</span><br><span class="line">&#125;;</span><br><span class="line">test one;</span><br><span class="line">one.int_val = <span class="number">4</span>;<span class="comment">//此时共用体内存储的就是int值</span></span><br><span class="line"></span><br><span class="line">one.double_val = <span class="number">1.45</span>;<span class="comment">//此时存储的是double值,int值已经丢失</span></span><br></pre></td></tr></table></figure></p>
+<p>共用体主要是为了应对”数据量唯一,格式不唯一“的情况,同时可以节省存储空间。同时共用体可以声明在结构体内部并不需要名称(匿名共用体)。  </p>
+<h2 id="枚举"><a href="#枚举" class="headerlink" title="枚举"></a>枚举</h2><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">enum</span> test &#123;one,two,three&#125;;</span><br><span class="line"></span><br><span class="line">test more;</span><br><span class="line">more = one;</span><br><span class="line"><span class="built_in">cout</span>&lt;&lt;more&lt;&lt;<span class="built_in">endl</span>;<span class="comment">//输出0</span></span><br></pre></td></tr></table></figure>
+<p>虽然枚举的符号常量对应着整数值,但是不能对其进行+-运算,或者说进行+-运算时枚举量被提升为int,同时枚举量的值可以使用赋值运算符显式指定。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">enum</span> test&#123;one = <span class="number">1</span>,four = <span class="number">4</span>,eight = <span class="number">8</span>&#125;;</span><br><span class="line"><span class="keyword">enum</span> test_two&#123;one,four=<span class="number">4</span>,five&#125;<span class="comment">//five默认是four的值+1=5;</span></span><br></pre></td></tr></table></figure></p>
+<h2 id="指针和自由存储空间"><a href="#指针和自由存储空间" class="headerlink" title="指针和自由存储空间"></a>指针和自由存储空间</h2><p>地址运算符&amp;可以获得一个变量的地址,*可以获得一个指针变量存储的地址值所指向的值(……)  </p>
+<h3 id="new分配内存-delete释放内存"><a href="#new分配内存-delete释放内存" class="headerlink" title="new分配内存/delete释放内存"></a>new分配内存/delete释放内存</h3><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">typeName* pointer_name = <span class="keyword">new</span> typeNmae;</span><br><span class="line"><span class="keyword">int</span>* pointer = <span class="keyword">new</span> <span class="keyword">int</span>;</span><br><span class="line"><span class="keyword">delete</span> pointer;<span class="comment">//释放pointer指向的内存,但不会删除pointer本身</span></span><br></pre></td></tr></table></figure>
+<p>不用delete同一个内存块两次,delete只能用来释放new分配的内存。  </p>
+<h3 id="new创建数组"><a href="#new创建数组" class="headerlink" title="new创建数组"></a>new创建数组</h3><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">int</span>* psome = <span class="keyword">new</span> <span class="keyword">int</span>[<span class="number">10</span>];<span class="comment">//psome指向数组中第一个元素的地址</span></span><br><span class="line"><span class="keyword">delete</span> [] psome;<span class="comment">//[]表示释放的是整个数组的内存而不是psome指向的元素的内存</span></span><br></pre></td></tr></table></figure>
+<p>在操作数组时,指针和数组名等效,psome[1]指向的就是第二个元素,指针可以进行+-运算,psome = psome+1;表示的psome指向的是第二个元素的地址。  </p>
+<h2 id="指针-数组和指针算术"><a href="#指针-数组和指针算术" class="headerlink" title="指针,数组和指针算术"></a>指针,数组和指针算术</h2><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">short</span> test[<span class="number">10</span>];</span><br><span class="line"></span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; test&lt;&lt; <span class="built_in">endl</span>;<span class="comment">//00AFFD9C</span></span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; &amp;test&lt;&lt; <span class="built_in">endl</span>;<span class="comment">//00AFFD9C</span></span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; test+<span class="number">1</span> &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//00AFFD9E</span></span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; &amp;test +<span class="number">1</span>&lt;&lt; <span class="built_in">endl</span>;<span class="comment">//00AFFDB0</span></span><br></pre></td></tr></table></figure>
+<p>test和&amp;test的值都是一样的,但数组名被解释为第一个元素的地址,所以对其+1表示的是下一个元素的地址,&amp;test被解释为整个数组的地址,对其+1表示的是下一个这么大的数组的地址。  </p>
+<h3 id="指针和字符串"><a href="#指针和字符串" class="headerlink" title="指针和字符串"></a>指针和字符串</h3><p>如果给cout提供一个字符的地址,他将从该字符起打印直到遇到空字符。<br>C++中用双引号括起来的字符串像数组一样,也是第一个元素的地址。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cout</span> &lt;&lt; <span class="string">"test"</span> &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//将t的地址发给cout,cout进行打印</span></span><br></pre></td></tr></table></figure></p>
+<h3 id="自动存储-静态存储-动态存储"><a href="#自动存储-静态存储-动态存储" class="headerlink" title="自动存储,静态存储,动态存储"></a>自动存储,静态存储,动态存储</h3><p>在函数内部定义的常规变量使用自动存储,称其为自动变量(栈变量),在函数被调用时,自动生,函数结束时消亡,有丶像Java中的局部变量。<br>静态存储是整个程序执行期间都存在的存储方式可以将其声明在函数外面,也可以使用static关键字。<br>C++内部管理了一个内储存池,称之为自由存储空间或堆,new/delete操作内存就是内存池中的内存,如果不delete,即使由于作用域等原因导致指针包含指针的内存被释放,但内存池中的内存也不会被释放。  </p>
+<h2 id="数组的替代品"><a href="#数组的替代品" class="headerlink" title="数组的替代品"></a>数组的替代品</h2><h3 id="vector"><a href="#vector" class="headerlink" title="vector"></a>vector</h3><p>vector对象在插入或添加值时可以自动调整长度。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">vector</span>&lt;typeName&gt; variable_name(element_number)</span><br></pre></td></tr></table></figure></p>
+<h3 id="array"><a href="#array" class="headerlink" title="array"></a>array</h3><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">array</span>&lt;typeName,element_number&gt; variable_name</span><br></pre></td></tr></table></figure>
+<p>array对象和数组对象分配在栈上,vector分配在堆上,array对象也可以进行赋值(值拷贝),同时C++并不检查数组的下标越界问题。  </p>
+<h1 id="第五章"><a href="#第五章" class="headerlink" title="第五章"></a>第五章</h1><h2 id="for循环"><a href="#for循环" class="headerlink" title="for循环"></a>for循环</h2><h3 id="复合语句"><a href="#复合语句" class="headerlink" title="复合语句"></a>复合语句</h3><p>如果在一个语句块中声明一个变量,外部语句块也有这个名称的变量,那么从声明位置到内部语句块结束的范围之内,新变量会隐藏旧变量。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">  <span class="keyword">using</span> <span class="keyword">namespace</span> <span class="built_in">std</span>;</span><br><span class="line">  <span class="keyword">int</span> x = <span class="number">20</span>;</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="built_in">cout</span> &lt;&lt; x &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//20;</span></span><br><span class="line">    <span class="keyword">int</span> x = <span class="number">10</span>;</span><br><span class="line">    <span class="built_in">cout</span> &lt;&lt; x &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//10;</span></span><br><span class="line">  &#125;</span><br><span class="line">  <span class="built_in">cout</span> &lt;&lt; x &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//20;</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<h3 id="逗号运算符"><a href="#逗号运算符" class="headerlink" title="逗号运算符"></a>逗号运算符</h3><p>逗号运算符确保先计算第一个表达式然后计算第二个表达式(顺序点),逗号表达式的值是第二部分的值。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">int</span> x = (<span class="number">10</span>, <span class="number">20</span>);</span><br><span class="line"><span class="built_in">cout</span> &lt;&lt; x &lt;&lt; <span class="built_in">endl</span>;<span class="comment">//20</span></span><br></pre></td></tr></table></figure></p>
+<h3 id="字符串的比较"><a href="#字符串的比较" class="headerlink" title="字符串的比较"></a>字符串的比较</h3><p>对于char数组形式的字符串之间的比较如果使用==比较的是地址,应该使用如果希望比较内容,应该使用strcmp函数(Java的compare方法)。<br>string对象的比较是在比较内容而不是地址,它使用了重载操作符(!=/=\=),他要求比较的两个对象中至少有一个为string对象。  </p>
+<h2 id="IO"><a href="#IO" class="headerlink" title="IO"></a>IO</h2><h3 id="文件尾条件"><a href="#文件尾条件" class="headerlink" title="文件尾条件"></a>文件尾条件</h3><p>当检测到EOF后,cin将eofbit和failbit都置为1,可以通过eof()/fail()函数进行检测。<br>当cin检测测到EOF后,cin将不再读取输入,此时需要调用cin.clear()清除EOF标记。istream类提供了可以将istream对象(eg:cin)转换为bool值的方法,如果最后一次读取成功了,返回true,反之。 </p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/31/C++大学教材笔记/" data-tooltip="C++大学教材笔记" aria-label="上一篇: C++大学教材笔记">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/23/要学C++了吗/" data-tooltip="要学C++了吗" aria-label="下一篇: 要学C++了吗">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/31/C++大学教材笔记/" data-tooltip="C++大学教材笔记" aria-label="上一篇: C++大学教材笔记">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/23/要学C++了吗/" data-tooltip="要学C++了吗" aria-label="下一篇: 要学C++了吗">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

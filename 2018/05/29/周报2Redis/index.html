@@ -1,0 +1,362 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>周报2 Redis - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\n对象redis所有类型的value都以redisObject结构表示    \ntype该属性记录了值对象的类型(String,set,zset,list,hash)\nencoding该属性记录值对象的编码方式(对象底层实现的数据结构)\nSDS与C字符串不同，SDS除了字符串本身外还记录长度和未使用的字节数。当要扩展字符串时，除了分配必须的内存外还会分配额外的内存，缩短字符串时并不立刻回收内存，而是修改free值。通过SDS自己的内存分配策略杜绝了缓冲区溢出和频繁的内存分配操作。  \n字典字典使用哈希表实现，一个键值对对应一个哈希节点。哈希表的数据结构在字典的实现中，他有两个哈希表，ht[0],ht[1]，一般情况下只使用ht[0]。rehash：根据哈希表的不同操作(扩展/收缩),为ht[1]分配合适的空间，然后将ht[0]的键值对rehash到ht[1]，这是一个渐进式rehash过程，通过rehashinx记录将要rehash的索引，每次对于字典的操作(增删改查),除了执行操作本身外还会将ht[0]在rehashidx上的键值对rehash到ht[1]，然后将rehashidx加一，直到所有的键值对全部rehash到ht[1],然后将ht[1]设置为ht[0]。  \nredisServerredis以RedisServer结构表示服务器，其内部有一个redisDb数组表示数据库，默认长度为16。每个redisDb对应一个字典，保存该数据库的所有键值对。  \n除了保存所有键值对的字典外，每个redisDb还有一个过期字典用于记录所有键的过期时间，该过期字典的键是一个指向键对象的指针，值是过期时间。对于过期键redis采用惰性删除和定期删除两种策略。对于数据库的读写操作，先检查过期时间，若未过期再执行真正的读写命令，已过期则删除。(惰性删除)在服务器的周期函数中，在规定时间内分多次遍历所有数据库的过期字典。(定期删除)  \n持久化RDBSAVE和BGSAVE命令用于生成RDB文件(阻塞式/生成子进程)。RDB文件通过记录数据库编号及该数据库的所有键值对(如果有过期时间，也会一并记录)达到对数据的持久化，并且通过redisServer中的dirty和lastsave记录自上次持久化后数据库被修改的次数和时间，依次达到”自定义条件保存”   \nAOFAOF通过记录命令达到持久化，服务器每次执行完一个命令，会将该命令追加到aof_buf缓冲区中，并定期刷到磁盘上。  \nAOF重写随着服务器的运行AOF文件会越来越大，其中可能会包含很多的冗余命令，通过AOF重写消除冗余命令并替代原AOF文件。服务器通过读取数据库的键值生成相应的命令，以此消除冗余命令，为了防止阻塞，可以生成一个子进程进行重写工作，在此期间执行的命令，不但会放到aof缓冲区还会放到aof重写缓冲区以保证数据一致。  \n主从复制主从复制的数据同步分为完整重同步和部分重同步。完整重同步用于初次复制：通过让主服务器创建并发送RDB文件以及向从服务器发送命令来达到同步。部分重同步用于处理断线重连情况：从服务器断线重连后，如果条件允许，主服务器可以向从服务器发送断线期间的命令达到部分重同步。实现：主从服务器分别维护一个偏移量，当发送/接收命令时修改该值，同时主服务器还维护一个复制积压缓冲区，在发送命令的同时将该命令写入缓冲区，当从服务器重连向主服务器发送同步命令时，会发送自己的偏移值，主服务器根据该值和自己的偏移值以及缓冲区内，决定进行何种同步。从服务每隔1秒会向主服务器发送ACK命令(包含了从服务器的偏移量)，以此可以检测命令丢失  \n哨兵哨兵用于监视主从服务器，他每隔一秒向主服务器发送ping命令，当他认为该服务器断线时(主观下线)，他会询问其他哨兵，当收到一定数量的下线判断时(客观下线)，他自从服务器中选出一个作为新的主服务器。  \n集群集群中的每个节点只能使用0号数据库并负责不同的槽，当某个节点接收到一条命令时他先计算键属于哪个槽，然后再执行命令或将该命令重定向到相应的节点，当向某个集群中加入节点时，为他分配相应的槽，并将槽中的键值转移到该节点。  \n事务在redis中开启事务后，相应的命令并不会执行，而是放到一个命令队列中，当执行事务时，若出现某一个命令出错，redis既不终止事务也不回滚，而是继续执行命令。redis提供了一个watch命令用于监视某些键，当服务器执行修改命令时，他会检查是否有客户端在监视该键，如果有他会在客户端设置一个标志位；客户端执行exec(提交事务)时，服务器会检查该客户端的标志位，若被设置了，则拒绝执行事务。由于redis是单线程的，所以他的事务总是串行执行。  \n流水线redis允许客户端一次发送多条命令以减少客户端服务端之间的网络通信次数\n参考Redis设计与实现","dateCreated":"2018-05-29T22:17:00+08:00","dateModified":"2018-09-24T15:17:56+08:00","datePublished":"2018-05-29T22:17:00+08:00","description":"Linux/Redis","headline":"周报2 Redis","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly2/redis.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/05/29/周报2Redis/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/05/29/周报2Redis/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly2/redis.png"}</script>
+    <meta name="description" content="Linux/Redis">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="周报2 Redis">
+<meta property="og:url" content="http://yoursite.com/2018/05/29/周报2Redis/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Linux/Redis">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdictht.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdict.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdbdict.png">
+<meta property="og:updated_time" content="2018-09-24T07:17:56.412Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="周报2 Redis">
+<meta name="twitter:description" content="Linux/Redis">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdictht.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly2/redis.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly2/redis.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            周报2 Redis
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-05-29T22:17:00+08:00">
+	
+		    5月 29, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#对象"><span class="toc-text">对象</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#type"><span class="toc-text">type</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#encoding"><span class="toc-text">encoding</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#SDS"><span class="toc-text">SDS</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#字典"><span class="toc-text">字典</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#redisServer"><span class="toc-text">redisServer</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#持久化"><span class="toc-text">持久化</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#RDB"><span class="toc-text">RDB</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#AOF"><span class="toc-text">AOF</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#AOF重写"><span class="toc-text">AOF重写</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#主从复制"><span class="toc-text">主从复制</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#哨兵"><span class="toc-text">哨兵</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#集群"><span class="toc-text">集群</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#事务"><span class="toc-text">事务</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#流水线"><span class="toc-text">流水线</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="对象"><a href="#对象" class="headerlink" title="对象"></a>对象</h1><p>redis所有类型的value都以redisObject结构表示    </p>
+<h2 id="type"><a href="#type" class="headerlink" title="type"></a>type</h2><p>该属性记录了值对象的类型(String,set,zset,list,hash)</p>
+<h2 id="encoding"><a href="#encoding" class="headerlink" title="encoding"></a>encoding</h2><p>该属性记录值对象的编码方式(对象底层实现的数据结构)</p>
+<h3 id="SDS"><a href="#SDS" class="headerlink" title="SDS"></a>SDS</h3><p>与C字符串不同，SDS除了字符串本身外还记录长度和未使用的字节数。当要扩展字符串时，除了分配必须的内存外还会分配额外的内存，缩短字符串时并不立刻回收内存，而是修改free值。通过SDS自己的内存分配策略杜绝了缓冲区溢出和频繁的内存分配操作。  </p>
+<h3 id="字典"><a href="#字典" class="headerlink" title="字典"></a>字典</h3><p>字典使用哈希表实现，一个键值对对应一个哈希节点。<br>哈希表的数据结构<img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdictht.png" alt><br>在字典的实现中，他有两个哈希表，ht[0],ht[1]，一般情况下只使用ht[0]。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdict.png" alt><br>rehash：根据哈希表的不同操作(扩展/收缩),为ht[1]分配合适的空间，然后将ht[0]的键值对rehash到ht[1]，这是一个渐进式rehash过程，通过rehashinx记录将要rehash的索引，每次对于字典的操作(增删改查),除了执行操作本身外还会将ht[0]在rehashidx上的键值对rehash到ht[1]，然后将rehashidx加一，直到所有的键值对全部rehash到ht[1],然后将ht[1]设置为ht[0]。  </p>
+<h2 id="redisServer"><a href="#redisServer" class="headerlink" title="redisServer"></a>redisServer</h2><p>redis以RedisServer结构表示服务器，其内部有一个redisDb数组表示数据库，默认长度为16。每个redisDb对应一个字典，保存该数据库的所有键值对。  </p>
+<p>除了保存所有键值对的字典外，每个redisDb还有一个过期字典用于记录所有键的过期时间，该过期字典的键是一个指向键对象的指针，值是过期时间。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly2%2Fdbdict.png" alt><br>对于过期键redis采用惰性删除和定期删除两种策略。<br>对于数据库的读写操作，先检查过期时间，若未过期再执行真正的读写命令，已过期则删除。(惰性删除)<br>在服务器的周期函数中，在规定时间内分多次遍历所有数据库的过期字典。(定期删除)  </p>
+<h1 id="持久化"><a href="#持久化" class="headerlink" title="持久化"></a>持久化</h1><h2 id="RDB"><a href="#RDB" class="headerlink" title="RDB"></a>RDB</h2><p>SAVE和BGSAVE命令用于生成RDB文件(阻塞式/生成子进程)。<br>RDB文件通过记录数据库编号及该数据库的所有键值对(如果有过期时间，也会一并记录)达到对数据的持久化，并且通过redisServer中的dirty和lastsave记录自上次持久化后数据库被修改的次数和时间，依次达到”自定义条件保存”   </p>
+<h2 id="AOF"><a href="#AOF" class="headerlink" title="AOF"></a>AOF</h2><p>AOF通过记录命令达到持久化，服务器每次执行完一个命令，会将该命令追加到aof_buf缓冲区中，并定期刷到磁盘上。  </p>
+<h3 id="AOF重写"><a href="#AOF重写" class="headerlink" title="AOF重写"></a>AOF重写</h3><p>随着服务器的运行AOF文件会越来越大，其中可能会包含很多的冗余命令，通过AOF重写消除冗余命令并替代原AOF文件。服务器通过读取数据库的键值生成相应的命令，以此消除冗余命令，为了防止阻塞，可以生成一个子进程进行重写工作，在此期间执行的命令，不但会放到aof缓冲区还会放到aof重写缓冲区以保证数据一致。  </p>
+<h1 id="主从复制"><a href="#主从复制" class="headerlink" title="主从复制"></a>主从复制</h1><p>主从复制的数据同步分为完整重同步和部分重同步。<br>完整重同步用于初次复制：通过让主服务器创建并发送RDB文件以及向从服务器发送命令来达到同步。<br>部分重同步用于处理断线重连情况：从服务器断线重连后，如果条件允许，主服务器可以向从服务器发送断线期间的命令达到部分重同步。<br>实现：主从服务器分别维护一个偏移量，当发送/接收命令时修改该值，同时主服务器还维护一个复制积压缓冲区，在发送命令的同时将该命令写入缓冲区，当从服务器重连向主服务器发送同步命令时，会发送自己的偏移值，主服务器根据该值和自己的偏移值以及缓冲区内，决定进行何种同步。<br>从服务每隔1秒会向主服务器发送ACK命令(包含了从服务器的偏移量)，以此可以检测命令丢失  </p>
+<h1 id="哨兵"><a href="#哨兵" class="headerlink" title="哨兵"></a>哨兵</h1><p>哨兵用于监视主从服务器，他每隔一秒向主服务器发送ping命令，当他认为该服务器断线时(主观下线)，他会询问其他哨兵，当收到一定数量的下线判断时(客观下线)，他自从服务器中选出一个作为新的主服务器。  </p>
+<h1 id="集群"><a href="#集群" class="headerlink" title="集群"></a>集群</h1><p>集群中的每个节点只能使用0号数据库并负责不同的槽，当某个节点接收到一条命令时他先计算键属于哪个槽，然后再执行命令或将该命令重定向到相应的节点，当向某个集群中加入节点时，为他分配相应的槽，并将槽中的键值转移到该节点。  </p>
+<h1 id="事务"><a href="#事务" class="headerlink" title="事务"></a>事务</h1><p>在redis中开启事务后，相应的命令并不会执行，而是放到一个命令队列中，当执行事务时，若出现某一个命令出错，redis既不终止事务也不回滚，而是继续执行命令。<br>redis提供了一个watch命令用于监视某些键，当服务器执行修改命令时，他会检查是否有客户端在监视该键，如果有他会在客户端设置一个标志位；客户端执行exec(提交事务)时，服务器会检查该客户端的标志位，若被设置了，则拒绝执行事务。<br>由于redis是单线程的，所以他的事务总是串行执行。  </p>
+<h1 id="流水线"><a href="#流水线" class="headerlink" title="流水线"></a>流水线</h1><p>redis允许客户端一次发送多条命令以减少客户端服务端之间的网络通信次数</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://book.douban.com/subject/25900156/" target="_blank" rel="noopener">Redis设计与实现</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/30/周报3JVM/" data-tooltip="周报3 JVM" aria-label="上一篇: 周报3 JVM">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/22/周报1-MySQL/" data-tooltip="周报1 MySQL" aria-label="下一篇: 周报1 MySQL">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/30/周报3JVM/" data-tooltip="周报3 JVM" aria-label="上一篇: 周报3 JVM">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/22/周报1-MySQL/" data-tooltip="周报1 MySQL" aria-label="下一篇: 周报1 MySQL">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

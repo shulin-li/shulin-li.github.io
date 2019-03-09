@@ -1,0 +1,391 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>Linux/存储基础 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\nLinux进程/线程进程描述符内核使用task_struct来表示一个进程(通过slab分配器创建,所以进程的创建很快)。该结构中有与内存,文件相关的指针。  \n创建/运行/写时复制fork系统调用可以用来创建一个进程,调用fork的称为父进程,产生的新进程称之为子进程。fork经过层层调用,为新进程创建一个内核栈,然后复制父进程的task_struct并赋值给子进程(父子进程描述符完全相同),随后对新进程的描述符中的部分成员清0,设置子进程的状态为UNINTERRUPTIBLE(暂时不可运行),给子进程分配pid,复制父进程的页表并赋值给子进程。由于父子进程的页表相同,所以父子进程暂时是指向同样的内存(此时的内存已经被标记位只读),即父子进程的代码段数据段等指向同一个内存页面,这是因为子进程往往需要执行一个全新的程序,并不需要用到父进程的数据,当需要写数据时再复制页面并写入数据。通过这种写时复制的策略,提高了进程创建时的性能。同时内核有意先运行子进程,因为子进程大概率会直接调用exec运行程序,这样就可能避免父进程先运行导致的“为父进程复制数据”这一情况。  \nfork调用在父子进程中分别返回(返回两次),向父进程返回子进程的pid,向子进程返回0。通过对返回值的判断以及exec系统调用就可以载入并运行新的进程。  \n在Linux中,线程被当做进程来实现—-同样使用task_struct表示,只不过同一个进程中的各个线程共享了部分变量(如地址空间),通过clone调用(这也是fork调用的真正本体),并传入特定的指示共享的flag参数来创建线程。  \n调度Linux下CPU调度的最小单位是线程,只不过Linux中线程和进程并没有太大区别。Linux提供抢占式任务调度,即可以由调度程序来决定各个进程什么时候运行。Linux使用两种优先级nice:-20到19,默认为0,值越低优先级越高,nice值代表时间片的比例。实时优先级: 0到99,默认为0,值越高优先级越高。  \n进程调度的问题传统的O(1)调度算法的问题在于,进程/优先级确定后,进程的时间片就确定了,每个进程运行完自己的时间片后,调度器才会运行另一个进程,这导致进程的切换频率固定,当进程较多时,调度延迟非常大,最终极大地影响交互进程。  \nCFS调度CFS不再使用“固定时间片”,他为进程分配的时间片是动态变化的,同时使用vruntime(虚拟运行时间)来作为key构建红黑树。Virtual runtime ＝ （physical runtime） * （nice value 0的权重）/进程的权重每次的调度都选择vruntime最小的进程运行,这样交互进程由于大部分时间都处于阻塞状态,物理运行时间较少-&gt;vruntime较小-&gt;能够得到更多的调度次数-&gt;交互性更好。    \n内存表示Linux使用struct page结构体表示物理上的内存页,该结构中使用了一个count字段记录该页的引用次数(可能是共享页),virtual记录该页的虚拟地址。用struct mm_struct用于表示进程的虚拟地址空间,该结构在统一进程的线程间共享,通过mm_users字段记录共享数目,vm_area_struct表示进程的虚拟地址区间。\n分配内存malloc使用brk(小内存)或者mmap(大内存)来进行具体的内存分配操作。mmap用作内存分配时,file参数为null,即匿名映射。当通过虚拟内存地址访问内存时,MMU首先在TLB中查找,若没有该地址的缓存,则去页表查找并将找到的地址缓存在TLB中。  \nSLABSLAB把不同的对象划分为高速缓存组,每个缓存组又划分为一个个的slab,slab由物理上连续的一个或多个页组成,每个slab包含了一些对象成员(即被缓存的数据结构),当需要分配某个类型的数据结构时,内核就可以从slab缓存中直接返回相应的指针(如果该数据结构被缓存的话),释放的时候也仅仅将相应结构返还给slab,并不返还给OS。通过slab可以加快对象的创建,减少内存因小对象不断分配回收带来的内存碎片。\n文件系统/IOLinux提供VFS这一虚拟文件系统层,VFS再调用具体的文件系统的相应实现。  \nsuperblock/inode/dentry/block超级快对象对应于文件系统,其中存放了块大小,挂载点,脏的inode链表等文件系统相关数据。inode对应着一个具体的文件(目录也是文件),其中存放了其对应的dentry对象,文件大小,硬连接数,文件对应的缓存等文件相关数据。dentry为目录项,对应着目录或普通文件,其中存放了目录项的名称,子目录链表等数据。block是数据块,文件的内容保存在这个区域。磁盘上所有块的大小都一样。如果文件包含了超过一个块的内容，则文件内容会存放在多个磁盘块中，每个block只能放置一个文件的数据。  \n读文件(buffer IO)当进程通过open调用打开一个文件时,会创建相应的文件对象(struct file),并返回相应的fd,通过read调用先找到相应的file对象和该对象当前的读位置,随后计算读文件的字节数,检查用户态地址是否合法;然后计算文件读操作的页面相关参数,并在page cache中查找是否数据已被缓存,如果在page cache中,则复制页面到用户态地址,否则申请页面并从硬盘读入数据(此时锁住页面并阻塞)到页面(插入到page cache中),然后再复制数据到用户态地址。  \n写文件(buffer IO)在写文件时,只需将用户态数据复制到page cache后即可返回,如果设置了SYNC标志位,则需要将page cache中的数据刷回磁盘。  \nmmap的读写mmap用于文件IO时(不再是分配内存时的匿名映射),操作系统将硬盘上的文件数据映射到内存中,当尝试读取mmap的文件时,引发缺页异常,文件系统会读取硬盘数据到内存(page  cache),随后直接返回(没有用户态和内核态的拷贝)。在调用mmap时需要制定一个flag参数,主要的可选值有“PRIVATE/SHARE/ANONYMOUS”,其中的“ANONYMOUS”参数就是malloc时的匿名映射。私有映射模式下,最开始并不会为每个进程创建一个私有映射,只有当进程尝试写数据时才会为其复制页面来创建私有映射,私有映射模式下的写无法写回硬盘文件。共享模式下,所有进程共享一个页面,该模式下的写,直接写page cache(如果没有SYNC标志位),也就是说多进程之间可以看到页面数据的变化。  \nselect和epollselect采用主动轮询，将fds_set拷贝到内核态，遍历fds_set，若无就绪fd，挂起线程，当某个fd就绪时，线程被唤起。epoll通过在内核中断处理程序中注册一个回调函数以实现”fd就绪时，将其加入就绪队列”，epoll对于fd的监听是增量式的，并不需要用户地址空间到内核地址空间的拷贝。 \nRAID基础逻辑划分程序在磁盘扇区之上虚拟出Stripee和Segment以及data Block(N倍的扇区大小)。在磁盘相同偏移处的横向逻辑分割形成Stripee,一个Stripee占用的单磁盘区域就是Segment。    \n定义\n连续/随机IO:一次IO给出的初始扇区地址和上一次IO的结束扇区地址是否是完全连续或者相差不多的,如果是,就是连续IO,否则就是随机IO。   \n顺序/并发IO:磁盘控制器在发出一条IO指令后,可以不需要等待磁盘回应就继续发送下一条IO,那么就是并发IO否则就是顺序IO,由于一块磁盘同时只能进行一次IO,所以如果只有一块磁盘,一定不能进行并发IO。  \nIOPS:每秒的IO次数,完成一次IO所用的时间=寻道时间+旋转延迟时间+数据传输时间。IOPS=并发系数/(一次IO所用时间)。 RAID0RAID0通过Stripee和Segment的划分,将多个物理磁盘合并为一个逻辑磁盘,RAID控制器收到IO指令时,根据当时划分得的映射公式,算出该IO具体应由那个磁盘负责,由于该逻辑磁盘是有多块物理磁盘组成的,所以可以进行并发IO,提升IO效率。同时减小Stripee的大小,可以尽量保证一个IO不至于占用所有磁盘,进而提升并发几率。RAID0与单盘IO  \n\nRAID1RAID0提升了并发IO几率,但是由于单个文件是离散的存在各个磁盘中的,有可能一个磁盘的损坏导致另外所有磁盘的数据都不能使用,数据可用性大大降低。RAID1使用其他盘做从盘存放冗余数据,以提升数据可用性。读IO由于主从盘数据一样,所以可以并发,写IO将数据同时写到多个盘,阵列中性能最差的磁盘成为性能瓶颈且不能并发。RAID1与单盘IO   \nRAID2RAID1利用从盘提高了数据的可用性,但是相比RAID0又大大降低了写并发效率。RAID2为了提升并发效率,非常极端……他将数据按位打散,顺序的在每个磁盘中写入1b,即假设有四块数据盘,对于单次IO,他将1,2,3,4b并发的写入四块盘,再将5,6,7,8b继续写入四块盘,通过以b为打散单位这一行为,强行提升并发效率(不再像RAID0那样要考虑条带大小),同时为提升数据可用性,他需要将多块磁盘用作校验盘(使用海明码,可检测并修复数据错误)。校验位和数据位是同时写入磁盘的,并不会给系统带来影响,但是需要计算校验位所以会带来延迟。RAID2并不能在IO级别并发。RAID2与单盘IO  \nRAID3RAID3基本与RAID2一致,但是他不再按位打散,而是使用扇区,同时只是用一块校验盘并采用了更高效的XOR校验算法(只能检测数据错误,不能修复)。由于校验盘只有一块不能并发写入,所以如果有一次IO没能使用全部的数据盘,那么剩余的数据盘不能接受IO请求。RAID3同样不支持IO级别的并发。RAID3与单盘IO  \nRAID4RAID4的主要思想解决校验盘的争用以提高IO并发,他将segment做的比较大,以使一次IO无法使用全部的数据盘,然后由文件系统本身对IO进行排序,将位于同一条带的IO排到一起,这样在写入的时候,这些同一条带的IO就可以并发进行(因为他们的校验码位于校验盘中的同一个segment)。RAID4与单盘IO  \nRAID5RAID5的目标仍然是解决校验盘争用问题,但是他不需要文件系统的支持,他的解决方法是取消校验盘(或者说使用分布式校验盘),转而将校验segment离散的存储在数据盘中这样子每个条带都有自己的校验segment,再将segment设置的较大,以使一次IO使用尽量少的磁盘,提高IO并发效率,同时不再需要文件系统来进行主动的IO排序。在IO并发率较低的时候,RAID5有较大的写惩罚,他需要先将要写的segment的数据和该条带上的校验segment的校验码读取出来,再根据旧数据,旧校验码,新数据计算新校验码,再将新数据和新校验码写到segment中(读改写),RAID5模式下,数据盘数量越多,可并发的几率就越大。补充:重构写与读改写不同之处在于,重构写时读取条带中不需要修改数据的segment,结合新数据算出校验码,再将新数据和没有修改的数据以及校验码一起写入segment中。另外一种是整条写,即当前IO要写所有的磁盘,那么就无需读取其他数据,直接根据新数据计算校验码,再将新数据和校验码写入segment即可。一般在要写入的磁盘数目超过阵列磁盘数目的一半时,采用重构写,反之采用读改写。  \nRAID6基本与RAID5一致,只不过他一共采用了两种校验码算法,即相当于两个“校验盘”,仍然采用RAID5“将校验码打散”的思路,进一步提高了数据的可用性。  \nLVM-卷管理层卷管理层是为了更好的管理划分底层磁盘(可能是物理磁盘也可能是RAID控制器提交的逻辑磁盘)。  \nPVLVM将操作系统识别到的磁盘称作PV(物理卷)  \nVG多个PV可以逻辑的归属于同一个VG(卷组),VG是一个逻辑上连续的虚拟存储池。  \nPP在VG的基础上,将这一大块存储池继续划分为一个个小的“物理区块”(物理区块的具体信息有LVM负责记录)。这个“物理区块”并不一点是由物理连续的扇区组成。  \nLP/LV一个或多个PP再次组成LP,如果对应多个PP,这些PP存储的数据一样,相当于RAID1。LP再次组成LV(逻辑卷),这就是LVM最终提供的用来存储数据的单位。  \n通过这些层次的重新划分,可以在OS层随意划分使用底层的磁盘。  \n快照文件系统的快照并不是复制全部的数据,而是复制元数据链。  \nRoFW元数据复制完成后,所有针对源文件系统的更改文件块都会被重定向到一块未使用的磁盘区域并且会更新元数据中相应的指针,以使其指向最新的数据,这样系统中保存了两套元数据链,一套是快照时保存的,一套是不断更新/学数据产生的,这种思路称为首次覆盖写时重定向(RoFW)。  \nCoFW元数据链复制完成后,以后的每次数据更新仍然更新原来的磁盘位置,但是在更新前需要将数据(快照保存的数据)复制到另外的未使用的磁盘区域,然后更新快照时复制得到的元数据链指针,这种思路称为首次覆盖写时复制。  \n基于快照数据恢复时,只需要在内存中做一下IO重定向就可以继续访问快照时的数据。  \n参考大话存储深入Linux内核架构Linux内核设计与实现","dateCreated":"2018-09-10T10:21:31+08:00","dateModified":"2019-03-01T17:08:43+08:00","datePublished":"2018-09-10T10:21:31+08:00","description":"Linux基础/存储基础","headline":"Linux/存储基础","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/09/10/Linux/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/09/10/Linux/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"}</script>
+    <meta name="description" content="Linux基础/存储基础">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="Linux&#x2F;存储基础">
+<meta property="og:url" content="http://yoursite.com/2018/09/10/Linux/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Linux基础/存储基础">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid0.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid0-io.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid1-io.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid2-io.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid3-io.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid4-io.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid6.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid5-io1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid5-io2.png">
+<meta property="og:updated_time" content="2019-03-01T09:08:43.336Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Linux&#x2F;存储基础">
+<meta name="twitter:description" content="Linux基础/存储基础">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid0.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Linux/存储基础
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-09-10T10:21:31+08:00">
+	
+		    9月 10, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#Linux"><span class="toc-text">Linux</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#进程-线程"><span class="toc-text">进程/线程</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#进程描述符"><span class="toc-text">进程描述符</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#创建-运行-写时复制"><span class="toc-text">创建/运行/写时复制</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#调度"><span class="toc-text">调度</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#进程调度的问题"><span class="toc-text">进程调度的问题</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#CFS调度"><span class="toc-text">CFS调度</span></a></li></ol></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#内存"><span class="toc-text">内存</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#表示"><span class="toc-text">表示</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#分配内存"><span class="toc-text">分配内存</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#SLAB"><span class="toc-text">SLAB</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#文件系统-IO"><span class="toc-text">文件系统/IO</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#superblock-inode-dentry-block"><span class="toc-text">superblock/inode/dentry/block</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#读文件-buffer-IO"><span class="toc-text">读文件(buffer IO)</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#写文件-buffer-IO"><span class="toc-text">写文件(buffer IO)</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#mmap的读写"><span class="toc-text">mmap的读写</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#select和epoll"><span class="toc-text">select和epoll</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#RAID"><span class="toc-text">RAID</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#基础"><span class="toc-text">基础</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#逻辑划分"><span class="toc-text">逻辑划分</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#定义"><span class="toc-text">定义</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID0"><span class="toc-text">RAID0</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID1"><span class="toc-text">RAID1</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID2"><span class="toc-text">RAID2</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID3"><span class="toc-text">RAID3</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID4"><span class="toc-text">RAID4</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID5"><span class="toc-text">RAID5</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RAID6"><span class="toc-text">RAID6</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#LVM-卷管理层"><span class="toc-text">LVM-卷管理层</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#PV"><span class="toc-text">PV</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#VG"><span class="toc-text">VG</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#PP"><span class="toc-text">PP</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#LP-LV"><span class="toc-text">LP/LV</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#快照"><span class="toc-text">快照</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#RoFW"><span class="toc-text">RoFW</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#CoFW"><span class="toc-text">CoFW</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="Linux"><a href="#Linux" class="headerlink" title="Linux"></a>Linux</h1><h2 id="进程-线程"><a href="#进程-线程" class="headerlink" title="进程/线程"></a>进程/线程</h2><h3 id="进程描述符"><a href="#进程描述符" class="headerlink" title="进程描述符"></a>进程描述符</h3><p>内核使用task_struct来表示一个进程(通过slab分配器创建,所以进程的创建很快)。该结构中有与内存,文件相关的指针。  </p>
+<h3 id="创建-运行-写时复制"><a href="#创建-运行-写时复制" class="headerlink" title="创建/运行/写时复制"></a>创建/运行/写时复制</h3><p>fork系统调用可以用来创建一个进程,调用fork的称为父进程,产生的新进程称之为子进程。fork经过层层调用,为新进程创建一个内核栈,然后复制父进程的task_struct并赋值给子进程(父子进程描述符完全相同),随后对新进程的描述符中的部分成员清0,设置子进程的状态为UNINTERRUPTIBLE(暂时不可运行),给子进程分配pid,复制父进程的页表并赋值给子进程。<br>由于父子进程的页表相同,所以父子进程暂时是指向同样的内存(此时的内存已经被标记位只读),即父子进程的代码段数据段等指向同一个内存页面,这是因为子进程往往需要执行一个全新的程序,并不需要用到父进程的数据,当需要写数据时再复制页面并写入数据。通过这种写时复制的策略,提高了进程创建时的性能。同时内核有意先运行子进程,因为子进程大概率会直接调用exec运行程序,这样就可能避免父进程先运行导致的“为父进程复制数据”这一情况。  </p>
+<p>fork调用在父子进程中分别返回(返回两次),向父进程返回子进程的pid,向子进程返回0。通过对返回值的判断以及exec系统调用就可以载入并运行新的进程。  </p>
+<p>在Linux中,线程被当做进程来实现—-同样使用task_struct表示,只不过同一个进程中的各个线程共享了部分变量(如地址空间),通过clone调用(这也是fork调用的真正本体),并传入特定的指示共享的flag参数来创建线程。  </p>
+<h3 id="调度"><a href="#调度" class="headerlink" title="调度"></a>调度</h3><p>Linux下CPU调度的最小单位是线程,只不过Linux中线程和进程并没有太大区别。<br>Linux提供抢占式任务调度,即可以由调度程序来决定各个进程什么时候运行。<br>Linux使用两种优先级<br>nice:-20到19,默认为0,值越低优先级越高,nice值代表时间片的比例。<br>实时优先级: 0到99,默认为0,值越高优先级越高。  </p>
+<h4 id="进程调度的问题"><a href="#进程调度的问题" class="headerlink" title="进程调度的问题"></a>进程调度的问题</h4><p>传统的O(1)调度算法的问题在于,进程/优先级确定后,进程的时间片就确定了,每个进程运行完自己的时间片后,调度器才会运行另一个进程,这导致进程的切换频率固定,当进程较多时,调度延迟非常大,最终极大地影响交互进程。  </p>
+<h4 id="CFS调度"><a href="#CFS调度" class="headerlink" title="CFS调度"></a>CFS调度</h4><p>CFS不再使用“固定时间片”,他为进程分配的时间片是动态变化的,同时使用vruntime(虚拟运行时间)来作为key构建红黑树。<br>Virtual runtime ＝ （physical runtime） * （nice value 0的权重）/进程的权重<br>每次的调度都选择vruntime最小的进程运行,这样交互进程由于大部分时间都处于阻塞状态,物理运行时间较少-&gt;vruntime较小-&gt;能够得到更多的调度次数-&gt;交互性更好。    </p>
+<h2 id="内存"><a href="#内存" class="headerlink" title="内存"></a>内存</h2><h3 id="表示"><a href="#表示" class="headerlink" title="表示"></a>表示</h3><p>Linux使用struct page结构体表示物理上的内存页,该结构中使用了一个count字段记录该页的引用次数(可能是共享页),virtual记录该页的虚拟地址。<br>用struct mm_struct用于表示进程的虚拟地址空间,该结构在统一进程的线程间共享,通过mm_users字段记录共享数目,vm_area_struct表示进程的虚拟地址区间。</p>
+<h3 id="分配内存"><a href="#分配内存" class="headerlink" title="分配内存"></a>分配内存</h3><p>malloc使用brk(小内存)或者mmap(大内存)来进行具体的内存分配操作。<br>mmap用作内存分配时,file参数为null,即匿名映射。<br>当通过虚拟内存地址访问内存时,MMU首先在TLB中查找,若没有该地址的缓存,则去页表查找并将找到的地址缓存在TLB中。  </p>
+<h3 id="SLAB"><a href="#SLAB" class="headerlink" title="SLAB"></a>SLAB</h3><p>SLAB把不同的对象划分为高速缓存组,每个缓存组又划分为一个个的slab,slab由物理上连续的一个或多个页组成,每个slab包含了一些对象成员(即被缓存的数据结构),当需要分配某个类型的数据结构时,内核就可以从slab缓存中直接返回相应的指针(如果该数据结构被缓存的话),释放的时候也仅仅将相应结构返还给slab,并不返还给OS。通过slab可以加快对象的创建,减少内存因小对象不断分配回收带来的内存碎片。</p>
+<h2 id="文件系统-IO"><a href="#文件系统-IO" class="headerlink" title="文件系统/IO"></a>文件系统/IO</h2><p>Linux提供VFS这一虚拟文件系统层,VFS再调用具体的文件系统的相应实现。  </p>
+<h2 id="superblock-inode-dentry-block"><a href="#superblock-inode-dentry-block" class="headerlink" title="superblock/inode/dentry/block"></a>superblock/inode/dentry/block</h2><p>超级快对象对应于文件系统,其中存放了块大小,挂载点,脏的inode链表等文件系统相关数据。<br>inode对应着一个具体的文件(目录也是文件),其中存放了其对应的dentry对象,文件大小,硬连接数,文件对应的缓存等文件相关数据。<br>dentry为目录项,对应着目录或普通文件,其中存放了目录项的名称,子目录链表等数据。<br>block是数据块,文件的内容保存在这个区域。磁盘上所有块的大小都一样。如果文件包含了超过一个块的内容，则文件内容会存放在多个磁盘块中，每个block只能放置一个文件的数据。  </p>
+<h3 id="读文件-buffer-IO"><a href="#读文件-buffer-IO" class="headerlink" title="读文件(buffer IO)"></a>读文件(buffer IO)</h3><p>当进程通过open调用打开一个文件时,会创建相应的文件对象(struct file),并返回相应的fd,通过read调用先找到相应的file对象和该对象当前的读位置,随后计算读文件的字节数,检查用户态地址是否合法;然后计算文件读操作的页面相关参数,并在page cache中查找是否数据已被缓存,如果在page cache中,则复制页面到用户态地址,否则申请页面并从硬盘读入数据(此时锁住页面并阻塞)到页面(插入到page cache中),然后再复制数据到用户态地址。  </p>
+<h3 id="写文件-buffer-IO"><a href="#写文件-buffer-IO" class="headerlink" title="写文件(buffer IO)"></a>写文件(buffer IO)</h3><p>在写文件时,只需将用户态数据复制到page cache后即可返回,如果设置了SYNC标志位,则需要将page cache中的数据刷回磁盘。  </p>
+<h3 id="mmap的读写"><a href="#mmap的读写" class="headerlink" title="mmap的读写"></a>mmap的读写</h3><p>mmap用于文件IO时(不再是分配内存时的匿名映射),操作系统将硬盘上的文件数据映射到内存中,当尝试读取mmap的文件时,引发缺页异常,文件系统会读取硬盘数据到内存(page  cache),随后直接返回(没有用户态和内核态的拷贝)。<br>在调用mmap时需要制定一个flag参数,主要的可选值有“PRIVATE/SHARE/ANONYMOUS”,其中的“ANONYMOUS”参数就是malloc时的匿名映射。<br>私有映射模式下,最开始并不会为每个进程创建一个私有映射,只有当进程尝试写数据时才会为其复制页面来创建私有映射,私有映射模式下的写无法写回硬盘文件。<br>共享模式下,所有进程共享一个页面,该模式下的写,直接写page cache(如果没有SYNC标志位),也就是说多进程之间可以看到页面数据的变化。  </p>
+<h3 id="select和epoll"><a href="#select和epoll" class="headerlink" title="select和epoll"></a>select和epoll</h3><p>select采用主动轮询，将fds_set拷贝到内核态，遍历fds_set，若无就绪fd，挂起线程，当某个fd就绪时，线程被唤起。<br>epoll通过在内核中断处理程序中注册一个回调函数以实现”fd就绪时，将其加入就绪队列”，epoll对于fd的监听是增量式的，并不需要用户地址空间到内核地址空间的拷贝。 </p>
+<h1 id="RAID"><a href="#RAID" class="headerlink" title="RAID"></a>RAID</h1><h2 id="基础"><a href="#基础" class="headerlink" title="基础"></a>基础</h2><h3 id="逻辑划分"><a href="#逻辑划分" class="headerlink" title="逻辑划分"></a>逻辑划分</h3><p>程序在磁盘扇区之上虚拟出Stripee和Segment以及data Block(N倍的扇区大小)。<br>在磁盘相同偏移处的横向逻辑分割形成Stripee,一个Stripee占用的单磁盘区域就是Segment。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid0.png" alt>    </p>
+<h3 id="定义"><a href="#定义" class="headerlink" title="定义"></a>定义</h3><ul>
+<li>连续/随机IO:一次IO给出的初始扇区地址和上一次IO的结束扇区地址是否是完全连续或者相差不多的,如果是,就是连续IO,否则就是随机IO。   </li>
+<li>顺序/并发IO:磁盘控制器在发出一条IO指令后,可以不需要等待磁盘回应就继续发送下一条IO,那么就是并发IO否则就是顺序IO,由于一块磁盘同时只能进行一次IO,所以如果只有一块磁盘,一定不能进行并发IO。  </li>
+<li>IOPS:每秒的IO次数,完成一次IO所用的时间=寻道时间+旋转延迟时间+数据传输时间。IOPS=并发系数/(一次IO所用时间)。 <h2 id="RAID0"><a href="#RAID0" class="headerlink" title="RAID0"></a>RAID0</h2>RAID0通过Stripee和Segment的划分,将多个物理磁盘合并为一个逻辑磁盘,RAID控制器收到IO指令时,根据当时划分得的映射公式,算出该IO具体应由那个磁盘负责,由于该逻辑磁盘是有多块物理磁盘组成的,所以可以进行并发IO,提升IO效率。同时减小Stripee的大小,可以尽量保证一个IO不至于占用所有磁盘,进而提升并发几率。<br>RAID0与单盘IO<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid0-io.png" alt>  </li>
+</ul>
+<h2 id="RAID1"><a href="#RAID1" class="headerlink" title="RAID1"></a>RAID1</h2><p>RAID0提升了并发IO几率,但是由于单个文件是离散的存在各个磁盘中的,有可能一个磁盘的损坏导致另外所有磁盘的数据都不能使用,数据可用性大大降低。<br>RAID1使用其他盘做从盘存放冗余数据,以提升数据可用性。读IO由于主从盘数据一样,所以可以并发,写IO将数据同时写到多个盘,阵列中性能最差的磁盘成为性能瓶颈且不能并发。<br>RAID1与单盘IO<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid1-io.png" alt>   </p>
+<h2 id="RAID2"><a href="#RAID2" class="headerlink" title="RAID2"></a>RAID2</h2><p>RAID1利用从盘提高了数据的可用性,但是相比RAID0又大大降低了写并发效率。RAID2为了提升并发效率,非常极端……他将数据按位打散,顺序的在每个磁盘中写入1b,即假设有四块数据盘,对于单次IO,他将1,2,3,4b并发的写入四块盘,再将5,6,7,8b继续写入四块盘,通过以b为打散单位这一行为,强行提升并发效率(不再像RAID0那样要考虑条带大小),同时为提升数据可用性,他需要将多块磁盘用作校验盘(使用海明码,可检测并修复数据错误)。校验位和数据位是同时写入磁盘的,并不会给系统带来影响,但是需要计算校验位所以会带来延迟。<br>RAID2并不能在IO级别并发。<br>RAID2与单盘IO<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid2-io.png" alt>  </p>
+<h2 id="RAID3"><a href="#RAID3" class="headerlink" title="RAID3"></a>RAID3</h2><p>RAID3基本与RAID2一致,但是他不再按位打散,而是使用扇区,同时只是用一块校验盘并采用了更高效的XOR校验算法(只能检测数据错误,不能修复)。<br>由于校验盘只有一块不能并发写入,所以如果有一次IO没能使用全部的数据盘,那么剩余的数据盘不能接受IO请求。RAID3同样不支持IO级别的并发。<br>RAID3与单盘IO<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid3-io.png" alt>  </p>
+<h2 id="RAID4"><a href="#RAID4" class="headerlink" title="RAID4"></a>RAID4</h2><p>RAID4的主要思想解决校验盘的争用以提高IO并发,他将segment做的比较大,以使一次IO无法使用全部的数据盘,然后由文件系统本身对IO进行排序,将位于同一条带的IO排到一起,这样在写入的时候,这些同一条带的IO就可以并发进行(因为他们的校验码位于校验盘中的同一个segment)。<br>RAID4与单盘IO<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid4-io.png" alt>  </p>
+<h2 id="RAID5"><a href="#RAID5" class="headerlink" title="RAID5"></a>RAID5</h2><p>RAID5的目标仍然是解决校验盘争用问题,但是他不需要文件系统的支持,他的解决方法是取消校验盘(或者说使用分布式校验盘),转而将校验segment离散的存储在数据盘中<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid6.png" alt><br>这样子每个条带都有自己的校验segment,再将segment设置的较大,以使一次IO使用尽量少的磁盘,提高IO并发效率,同时不再需要文件系统来进行主动的IO排序。<br>在IO并发率较低的时候,RAID5有较大的写惩罚,他需要先将要写的segment的数据和该条带上的校验segment的校验码读取出来,再根据旧数据,旧校验码,新数据计算新校验码,再将新数据和新校验码写到segment中(读改写),RAID5模式下,数据盘数量越多,可并发的几率就越大。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid5-io1.png" alt><br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/raid0/raid5-io2.png" alt><br>补充:重构写与读改写不同之处在于,重构写时读取条带中不需要修改数据的segment,结合新数据算出校验码,再将新数据和没有修改的数据以及校验码一起写入segment中。<br>另外一种是整条写,即当前IO要写所有的磁盘,那么就无需读取其他数据,直接根据新数据计算校验码,再将新数据和校验码写入segment即可。<br>一般在要写入的磁盘数目超过阵列磁盘数目的一半时,采用重构写,反之采用读改写。  </p>
+<h2 id="RAID6"><a href="#RAID6" class="headerlink" title="RAID6"></a>RAID6</h2><p>基本与RAID5一致,只不过他一共采用了两种校验码算法,即相当于两个“校验盘”,仍然采用RAID5“将校验码打散”的思路,进一步提高了数据的可用性。  </p>
+<h1 id="LVM-卷管理层"><a href="#LVM-卷管理层" class="headerlink" title="LVM-卷管理层"></a>LVM-卷管理层</h1><p>卷管理层是为了更好的管理划分底层磁盘(可能是物理磁盘也可能是RAID控制器提交的逻辑磁盘)。  </p>
+<h2 id="PV"><a href="#PV" class="headerlink" title="PV"></a>PV</h2><p>LVM将操作系统识别到的磁盘称作PV(物理卷)  </p>
+<h2 id="VG"><a href="#VG" class="headerlink" title="VG"></a>VG</h2><p>多个PV可以逻辑的归属于同一个VG(卷组),VG是一个逻辑上连续的虚拟存储池。  </p>
+<h2 id="PP"><a href="#PP" class="headerlink" title="PP"></a>PP</h2><p>在VG的基础上,将这一大块存储池继续划分为一个个小的“物理区块”(物理区块的具体信息有LVM负责记录)。<br>这个“物理区块”并不一点是由物理连续的扇区组成。  </p>
+<h2 id="LP-LV"><a href="#LP-LV" class="headerlink" title="LP/LV"></a>LP/LV</h2><p>一个或多个PP再次组成LP,如果对应多个PP,这些PP存储的数据一样,相当于RAID1。<br>LP再次组成LV(逻辑卷),这就是LVM最终提供的用来存储数据的单位。  </p>
+<p>通过这些层次的重新划分,可以在OS层随意划分使用底层的磁盘。  </p>
+<h1 id="快照"><a href="#快照" class="headerlink" title="快照"></a>快照</h1><p>文件系统的快照并不是复制全部的数据,而是复制元数据链。  </p>
+<h2 id="RoFW"><a href="#RoFW" class="headerlink" title="RoFW"></a>RoFW</h2><p>元数据复制完成后,所有针对源文件系统的更改文件块都会被重定向到一块未使用的磁盘区域并且会更新元数据中相应的指针,以使其指向最新的数据,这样系统中保存了两套元数据链,一套是快照时保存的,一套是不断更新/学数据产生的,这种思路称为首次覆盖写时重定向(RoFW)。  </p>
+<h2 id="CoFW"><a href="#CoFW" class="headerlink" title="CoFW"></a>CoFW</h2><p>元数据链复制完成后,以后的每次数据更新仍然更新原来的磁盘位置,但是在更新前需要将数据(快照保存的数据)复制到另外的未使用的磁盘区域,然后更新快照时复制得到的元数据链指针,这种思路称为首次覆盖写时复制。  </p>
+<p>基于快照数据恢复时,只需要在内存中做一下IO重定向就可以继续访问快照时的数据。  </p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://book.douban.com/subject/26325526/" target="_blank" rel="noopener">大话存储</a><br><a href="https://book.douban.com/subject/4843567/" target="_blank" rel="noopener">深入Linux内核架构</a><br><a href="https://book.douban.com/subject/6097773/" target="_blank" rel="noopener">Linux内核设计与实现</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/09/24/Netty基础源码1/" data-tooltip="Netty基础源码" aria-label="上一篇: Netty基础源码">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/31/C++大学教材笔记/" data-tooltip="C++大学教材笔记" aria-label="下一篇: C++大学教材笔记">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/09/24/Netty基础源码1/" data-tooltip="Netty基础源码" aria-label="上一篇: Netty基础源码">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/31/C++大学教材笔记/" data-tooltip="C++大学教材笔记" aria-label="下一篇: C++大学教材笔记">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

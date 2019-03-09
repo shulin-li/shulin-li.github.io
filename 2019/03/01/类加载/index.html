@@ -1,0 +1,365 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>类加载 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n类加载加载加载阶段主要做的就是处理字节码文件,解析字段偏移量,解析方法,生成相应的instanceKlass以及其Java级别的对等镜像类:元数据区中的java.lang.Class对象。  \nparse_methods在解析字节码文件中的方法生成instanceKlass时,JVM会为每一个方法生成相应的C++实例(Method和constMethod),这里重点要关注vtable的生成,也就是Java多态的实现。12345678910111213141516171819202122void klassVtable::compute_vtable_size_and_num_mirandas(    int* vtable_length_ret, int* num_new_mirandas,    GrowableArray&lt;Method*&gt;* all_mirandas, Klass* super,    Array&lt;Method*&gt;* methods, AccessFlags class_flags,    Handle classloader, Symbol* classname, Array&lt;Klass*&gt;* local_interfaces,    TRAPS) &#123;  // set up default result values  int vtable_length = 0;  // start off with super's vtable length  InstanceKlass* sk = (InstanceKlass*)super;  vtable_length = super == NULL ? 0 : sk-&gt;vtable_length();  // go thru each method in the methods table to see if it needs a new entry  int len = methods-&gt;length();  for (int i = 0; i &lt; len; i++) &#123;    methodHandle mh(THREAD, methods-&gt;at(i));    if (needs_new_vtable_entry(mh, super, classloader, classname, class_flags, THREAD)) &#123;      vtable_length += vtableEntry::size(); // we need a new entry    &#125;  &#125;&#125;\n首先,获取父类的vtable的大小并设为当前类的vtable大小,然后遍历当前类的每一个方法,调用needs、_new_vtable_entry判断其是否是虚方法  \n\n如果当前类是一个接口,返回false  \n如果当前方法是构造方法或final或static方法,返回false  \n如果父类为null,返回true(除了Object类,所有的Java类的父类都不为null)  \n如果方法为private,返回true  \n遍历父类(包括间接父类)中方法签名与当前方法相同的方法,如果父类方法是public或protected且不是static,说明子类重写了父类方法,返回false当确定vtable_length后,便可以为instanceKlass分配vtable,他首先会继承父类的vtable,其中存储的是指向Method(C++层面)的指针,如果当前类重写了父类的方法,则将该指针指向重写后的Method对象。当执行多态的invokevirtual指令时,会取操作数栈的this引用找到堆中的Oop,随后找到Oop指向的Klass,最终在vtable中找到真正的方法并执行。    \n\n链接验证这个阶段会对class文件的格式进行大量的验证,如魔数检查;版本号检查;父类型检查……  \n准备为静态字段分配内存  \n解析将符号引用转化为直接引用  \n\n符号引用:在最初解析class文件时,会生成该文件对应的运行时常量池  12345678Constant pool:   #2 = Methodref          #3.#17         //  X.bar:()V   #3 = Class              #18            //  X   #6 = Utf8               ()V  #13 = Utf8               bar  #16 = NameAndType        #5:#6          //  \"&lt;init&gt;\":()V  #17 = NameAndType        #13:#6         //  bar:()V  #18 = Utf8               X\n\n\n当需要执行invokevirtual #2(调用bar方法)这条字节码时,当常量池找到#2,再顺着#3,#17一路找下去,发现要调用的是“类X的返回值为void的无参bar方法”,这样的方法引用就是符号引用(UTF-8字符串)。  \n\n直接引用:当找出符号引用后,可以根据类名找到instanceKlass,再找到他的方法表,进而找到method对象的指针,这个指针就是直接引用。直接引用不一定必须是指针,也可以是偏移量,如:在获取对象字段时,通过引用找到对象,再结合字段在Oop中的偏移量也可以直接找到字段。当找到直接引用后,可以将方法指针写到常量池中(#2处),不同的方法调用指令,解析后的处理也不一样,invokevirtual可能是将方法在虚方法表中的索引写到常量池中初始化初始化就是执行cinit方法,主要就是为静态变量赋值(final static变量的赋值也在这一步,但不是在cinit方法中),执行静态代码块,cinit方法的执行会由JVM加锁保证只执行一次。  \n\n其他加载和链接这两个步骤并不要求完全顺序执行,个人看来这两个步骤似乎直接混在了ClassFileParser类的parseClassFile方法中,毕竟在加载中需要创建java.lang.Class类实例,这个实例是要持有静态字段的,所以这时候已经为静态字段分配内存了。解析阶段的引用解析也不要求一定在类加载阶段进行解析,只要在运行相应字节码指令前进行完引用解析即可  \n参考揭秘Java虚拟机JVM里的符号引用如何存储？","dateCreated":"2019-03-01T20:12:21+08:00","dateModified":"2019-03-02T10:20:00+08:00","datePublished":"2019-03-01T20:12:21+08:00","description":"类加载","headline":"类加载","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/03/01/类加载/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/03/01/类加载/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="类加载">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="类加载">
+<meta property="og:url" content="http://yoursite.com/2019/03/01/类加载/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="类加载">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-03-02T02:20:00.501Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="类加载">
+<meta name="twitter:description" content="类加载">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            类加载
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-03-01T20:12:21+08:00">
+	
+		    3月 01, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#类加载"><span class="toc-text">类加载</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#加载"><span class="toc-text">加载</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#parse-methods"><span class="toc-text">parse_methods</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#链接"><span class="toc-text">链接</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#验证"><span class="toc-text">验证</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#准备"><span class="toc-text">准备</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#解析"><span class="toc-text">解析</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#初始化"><span class="toc-text">初始化</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#其他"><span class="toc-text">其他</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="类加载"><a href="#类加载" class="headerlink" title="类加载"></a>类加载</h1><h2 id="加载"><a href="#加载" class="headerlink" title="加载"></a>加载</h2><p>加载阶段主要做的就是处理字节码文件,解析字段偏移量,解析方法,生成相应的instanceKlass以及其Java级别的对等镜像类:元数据区中的java.lang.Class对象。  </p>
+<h3 id="parse-methods"><a href="#parse-methods" class="headerlink" title="parse_methods"></a>parse_methods</h3><p>在解析字节码文件中的方法生成instanceKlass时,JVM会为每一个方法生成相应的C++实例(Method和constMethod),这里重点要关注vtable的生成,也就是Java多态的实现。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">void</span> klassVtable::compute_vtable_size_and_num_mirandas(</span><br><span class="line">    <span class="keyword">int</span>* vtable_length_ret, <span class="keyword">int</span>* num_new_mirandas,</span><br><span class="line">    GrowableArray&lt;Method*&gt;* all_mirandas, Klass* super,</span><br><span class="line">    Array&lt;Method*&gt;* methods, AccessFlags class_flags,</span><br><span class="line">    Handle classloader, Symbol* classname, Array&lt;Klass*&gt;* local_interfaces,</span><br><span class="line">    TRAPS) &#123;</span><br><span class="line">  <span class="comment">// set up default result values</span></span><br><span class="line">  <span class="keyword">int</span> vtable_length = <span class="number">0</span>;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// start off with super's vtable length</span></span><br><span class="line">  InstanceKlass* sk = (InstanceKlass*)super;</span><br><span class="line">  vtable_length = super == <span class="literal">NULL</span> ? <span class="number">0</span> : sk-&gt;vtable_length();</span><br><span class="line"></span><br><span class="line">  <span class="comment">// go thru each method in the methods table to see if it needs a new entry</span></span><br><span class="line">  <span class="keyword">int</span> len = methods-&gt;length();</span><br><span class="line">  <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; len; i++) &#123;</span><br><span class="line">    <span class="function">methodHandle <span class="title">mh</span><span class="params">(THREAD, methods-&gt;at(i))</span></span>;</span><br><span class="line">    <span class="keyword">if</span> (needs_new_vtable_entry(mh, super, classloader, classname, class_flags, THREAD)) &#123;</span><br><span class="line">      vtable_length += vtableEntry::size(); <span class="comment">// we need a new entry</span></span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>首先,获取父类的vtable的大小并设为当前类的vtable大小,然后遍历当前类的每一个方法,调用needs、_new_vtable_entry判断其是否是虚方法  </p>
+<ul>
+<li>如果当前类是一个接口,返回false  </li>
+<li>如果当前方法是构造方法或final或static方法,返回false  </li>
+<li>如果父类为null,返回true(除了Object类,所有的Java类的父类都不为null)  </li>
+<li>如果方法为private,返回true  </li>
+<li>遍历父类(包括间接父类)中方法签名与当前方法相同的方法,如果父类方法是public或protected且不是static,说明子类重写了父类方法,返回false<br>当确定vtable_length后,便可以为instanceKlass分配vtable,他首先会继承父类的vtable,其中存储的是指向Method(C++层面)的指针,如果当前类重写了父类的方法,则将该指针指向重写后的Method对象。<br>当执行多态的invokevirtual指令时,会取操作数栈的this引用找到堆中的Oop,随后找到Oop指向的Klass,最终在vtable中找到真正的方法并执行。    </li>
+</ul>
+<h2 id="链接"><a href="#链接" class="headerlink" title="链接"></a>链接</h2><h3 id="验证"><a href="#验证" class="headerlink" title="验证"></a>验证</h3><p>这个阶段会对class文件的格式进行大量的验证,如魔数检查;版本号检查;父类型检查……  </p>
+<h3 id="准备"><a href="#准备" class="headerlink" title="准备"></a>准备</h3><p>为静态字段分配内存  </p>
+<h3 id="解析"><a href="#解析" class="headerlink" title="解析"></a>解析</h3><p>将符号引用转化为直接引用  </p>
+<ul>
+<li>符号引用:在最初解析class文件时,会生成该文件对应的运行时常量池  <figure class="highlight"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">Constant pool:</span><br><span class="line">   #2 = Methodref          #3.#17         //  X.bar:()V</span><br><span class="line">   #3 = Class              #18            //  X</span><br><span class="line">   #6 = Utf8               ()V</span><br><span class="line">  #13 = Utf8               bar</span><br><span class="line">  #16 = NameAndType        #5:#6          //  "&lt;init&gt;":()V</span><br><span class="line">  #17 = NameAndType        #13:#6         //  bar:()V</span><br><span class="line">  #18 = Utf8               X</span><br></pre></td></tr></table></figure>
+</li>
+</ul>
+<p>当需要执行invokevirtual #2(调用bar方法)这条字节码时,当常量池找到#2,再顺着#3,#17一路找下去,发现要调用的是“类X的返回值为void的无参bar方法”,这样的方法引用就是符号引用(UTF-8字符串)。  </p>
+<ul>
+<li>直接引用:<br>当找出符号引用后,可以根据类名找到instanceKlass,再找到他的方法表,进而找到method对象的指针,这个指针就是直接引用。<br>直接引用不一定必须是指针,也可以是偏移量,如:在获取对象字段时,通过引用找到对象,再结合字段在Oop中的偏移量也可以直接找到字段。<br>当找到直接引用后,可以将方法指针写到常量池中(#2处),不同的方法调用指令,解析后的处理也不一样,invokevirtual可能是将方法在虚方法表中的索引写到常量池中<h2 id="初始化"><a href="#初始化" class="headerlink" title="初始化"></a>初始化</h2>初始化就是执行cinit方法,主要就是为静态变量赋值(final static变量的赋值也在这一步,但不是在cinit方法中),执行静态代码块,cinit方法的执行会由JVM加锁保证只执行一次。  </li>
+</ul>
+<h2 id="其他"><a href="#其他" class="headerlink" title="其他"></a>其他</h2><p>加载和链接这两个步骤并不要求完全顺序执行,个人看来这两个步骤似乎直接混在了ClassFileParser类的parseClassFile方法中,毕竟在加载中需要创建java.lang.Class类实例,这个实例是要持有静态字段的,所以这时候已经为静态字段分配内存了。<br>解析阶段的引用解析也不要求一定在类加载阶段进行解析,只要在运行相应字节码指令前进行完引用解析即可  </p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://book.douban.com/subject/27086821/" target="_blank" rel="noopener">揭秘Java虚拟机</a><br><a href="https://www.zhihu.com/question/30300585" target="_blank" rel="noopener">JVM里的符号引用如何存储？</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/04/GC/" data-tooltip="GC" aria-label="上一篇: GC">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/01/Java反射/" data-tooltip="Java反射" aria-label="下一篇: Java反射">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/04/GC/" data-tooltip="GC" aria-label="上一篇: GC">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/01/Java反射/" data-tooltip="Java反射" aria-label="下一篇: Java反射">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

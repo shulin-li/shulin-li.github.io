@@ -1,0 +1,376 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>Java多线程(一) - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\n线程(Thread)的创建Java中Thread的实例化时,涉及到四类”对象”。  \n\njava.lang.Thread:Java代码操控的类。  \nJavaThread:JVM中C++定义的类,一个JavaThread的instance代表了在JVM中的java.lang.Thread的instance, 它维护了线程的状态，并且维护一个指针指向java.lang.Thread创建的对象(oop)。它同时还维护了一个指针指向对应的OSThread，来获取底层操作系统创建的osthread的状态。  \nOSThread:JVM中C++定义的类，代表了JVM中对底层操作系统的osthread的抽象，它维护着实际操作系统创建的线程句柄handle，可以获取底层osthread的状态。  \nosthread:操作系统级别的线程，也就是真正意义上的线程，它的具体实现由操作系统完成。在new一个java.lang.Thread时,仅仅是设置到ThreadName,ThreadGroup,Runnable等属性。当调用start()时,会依次创建上述其余三个对象并分配资源,随后运行Runnable。PS:Java为什么不允许一个线程start()两次?每次的start()就是创建底层线程的过程,那么start()两次不就是创建两个线程吗?  \n\n缓存/MESI/伪共享缓存对于Intel处理器来说L1,L2缓存有Core独享,L3整个CPU共享。整个缓存分为多个组，每组又由多行最小存储单元CacheLine(缓存行)组成，每个缓存行由1个有效位(标识次缓存行是否有效)，t个标记位(用来唯一标识该缓存行)，64(一般情况)字节(存储真正的数据)组成。  \nMESI一种缓存一致性协议(AMD/Intel各自有改进),协议将缓存行划分为各种状态,通过状态的检测来保证各Core间的缓存一致性。MESI仅作用于Cache和内存层面。M:数据只存在本cache中,已被修改(与内存不一致)。E:数据只存在本cache中,未被修改(与内存一致)。S:数据存在多cache中但未被修改。I:数据已经无效。后来为减少缓存状态转移过程(其实就是core间cache的传输)所浪费的时间,在寄存器和L1 Cache之间又加了LoadBuffer和StoreBuffer，当要Load一个数据而数据在别的core的cache中时把读请求放到LoadBuffer中然后执行执行下面的指令(如果前后指令没有数据依赖性)，写数据时也是将数据写到StoreBuffer中然后在合适的时间将数据刷到cache中(这样的异步处理可能会引发数据不一致问题-&gt;指令重排序-&gt;Volatile)。  \n伪共享缓存数据的存取以缓存行为单位(64字节),为充分利用容量,加载缓存时一般填满64字节,如一个long类型长度为8的数组，当操作该数组中某一个值时，会将整个数组缓存至缓存行。但是多core在对该数组的不同数据(不同Index)操作时,由于MESI协议,各个core会不断竞争这个缓存行,这个缓存行会不断在core间来回传输,使得操作甚至退化为串行,这类问题称为伪共享。解决伪共享的办法就是数据填充-&gt;填充无用的数据使被操作的数据间互相隔离(不会被加载到一个缓存行),Contended注解就提供了这个功能,ConcurrentHashMap就使用了这个注解。  \n指令重排序/内存屏障指令重排序个人理解:分为编译器重排序和CPU重排序,其中CPU重排序称作乱序更恰当?编译器的重排序是编译器在保证单线程最终结果正确的前提下有意识的,主动的对于指令顺序的一种重排。CPU重排序我认为是一种在CPU执行指令期间由于cache miss(MESI一节中所提到的LoadBuffer/StoreBuffer)等原因所导致的一种无意识的重排序(乱序)。指令重排序在多线程环境下可能会导致错误的结果。内存屏障是一种禁止指令重排序的手段,他表示在其之前的指令不会被重排到其后,相对于指令重排序,内存屏障也分为编译器/CPU屏障,CPU内存屏障是一条真正的指令(需要被CPU感知到)。对于CPU内存屏障,他要求CPU必须先处理完LoadBuffer/StoreBuffer中的指令。  \n内存模型/内存可见性Java为屏蔽底层细节提供了抽象的内存模型:主内存可以类比于物理内存,线程内的工作内存可以类比为cache,线程对于所有数据的操作都必须先将主内存的数据复制到工作内存,线程间通过主内存共享传递变量。内存可见性指的就是一个线程对于一个变量的修改是否可以立刻被其他线程看到(后续会讲到)。  \n管程/对象头管程是一种用来监视线程对某些资源访问的工具,他需要编译器的支持(Java支持),JVM使用ObjectMonitor(C++)实现管程,他有两个队列,_WaitSet 和 _EntryList,用来保存ObjectWaiter对象列表(每个等待锁的线程都会被封装成ObjectWaiter对象),_owner指向持有Monitor对象的线程,当多个线程同时访问一段同步代码时,首先会进入 _EntryList 集合,当线程获取到对象的monitor后进入 _Owner 区域并把monitor中的owner变量设置为当前线程同时monitor中的计数器count加1,若线程调用 wait() 方法,将释放当前持有的monitor,owner变量恢复为null,count自减1,同时该线程进入 WaitSet集合中等待被唤醒。若当前线程执行完毕也将释放monitor(锁)并复位变量的值,以便其他线程进入获取monitor(锁) 。\n对象头是对象的一部分,在JVM中,对象在内存中的布局分为三块区域:对象头,实例数据和对齐填充。MarkWord的中的LockWord指向了Monitor的起始地址。      \n线程的状态NEW实例化thread后,start前,thread状态就是NEW。  \nRUNNABLE正在运行的线程或可运行线程(等待CPU调度)。\nBLOCKED线程在等待管程锁,如使用synchronized。  \nWAITING不带timeout的Object.wait(),不带timeout的thread.join,LockSupport.park(),该状态的线程会等待其他线程的某些行为以唤醒他们。  \nTIMED_WAITING有等待时间的等待状态,thread.sleep(timeout),thread.join(timeout),Object.wait(timeout),LockSupport.parkNanos。  \nTERMINATED已经运行完毕终止了的线程。  \n线程的中断java线程的中断并不会将线程立即停止运行,”中断”仅代表线程的一种状态(true/false)\nisInterrupted()实例方法,返回当前线程的中断状态\ninterrupted()静态方法,该方法会返回当前线程是否被中断,同时将中断状态重置为false(意味着,如果连续调用两次,第二次一定会返回false),有点像getAndReset。  \ninterrupt()实例方法,如果当前线程阻塞在sleep,join,wait(带不带参数都算,详见interrupt方法注释)那么线程会立即退出阻塞状态,并抛出InterruptedException(并不设置中断状态),如果线程阻塞在LockSupport.park上会立即退出阻塞状态并设置中断状态为true但不抛异常,如果线程正常活动,仅设置当前线程的中断状态为true。  \nInterruptedException如果当前线程阻塞在诸如 Object#wait(),Thread#sleep()上时,被其他线程中断,那么就会抛出此异常。  \n其他concurrent包下的很多工具类中的很多阻塞方法都提供了两个版本:响应中断/不响应中断(保留中断状态)不响应中断意味着,当线程A阻塞在某一个方法上(比如抢锁)时,线程B调用A的interrupt方法,线程A并不会停止抢锁。\n参考以JVM的角度看Java线程的创建与运行深入理解并行编程深入理解Java虚拟机CPU Cache and Memory Ordering  ","dateCreated":"2018-08-09T20:30:15+08:00","dateModified":"2019-03-02T15:49:45+08:00","datePublished":"2018-08-09T20:30:15+08:00","description":"Java多线程(一):基础知识","headline":"Java多线程(一)","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/08/09/Java多线程1/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/08/09/Java多线程1/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="Java多线程(一):基础知识">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="Java多线程(一)">
+<meta property="og:url" content="http://yoursite.com/2018/08/09/Java多线程1/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Java多线程(一):基础知识">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/cache.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/mesi.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/cpu-cache-and-memory-ordering-8-638.jpg">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/false-sharing.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/monitor.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/objecthead.png">
+<meta property="og:updated_time" content="2019-03-02T07:49:45.567Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Java多线程(一)">
+<meta name="twitter:description" content="Java多线程(一):基础知识">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/cache.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Java多线程(一)
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-08-09T20:30:15+08:00">
+	
+		    8月 09, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#线程-Thread-的创建"><span class="toc-text">线程(Thread)的创建</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#缓存-MESI-伪共享"><span class="toc-text">缓存/MESI/伪共享</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#缓存"><span class="toc-text">缓存</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#MESI"><span class="toc-text">MESI</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#伪共享"><span class="toc-text">伪共享</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#指令重排序-内存屏障"><span class="toc-text">指令重排序/内存屏障</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#内存模型-内存可见性"><span class="toc-text">内存模型/内存可见性</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#管程-对象头"><span class="toc-text">管程/对象头</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#线程的状态"><span class="toc-text">线程的状态</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#NEW"><span class="toc-text">NEW</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#RUNNABLE"><span class="toc-text">RUNNABLE</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#BLOCKED"><span class="toc-text">BLOCKED</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#WAITING"><span class="toc-text">WAITING</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#TIMED-WAITING"><span class="toc-text">TIMED_WAITING</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#TERMINATED"><span class="toc-text">TERMINATED</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#线程的中断"><span class="toc-text">线程的中断</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#isInterrupted"><span class="toc-text">isInterrupted()</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#interrupted"><span class="toc-text">interrupted()</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#interrupt"><span class="toc-text">interrupt()</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#InterruptedException"><span class="toc-text">InterruptedException</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#其他"><span class="toc-text">其他</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="线程-Thread-的创建"><a href="#线程-Thread-的创建" class="headerlink" title="线程(Thread)的创建"></a>线程(Thread)的创建</h1><p>Java中Thread的实例化时,涉及到四类”对象”。  </p>
+<ul>
+<li>java.lang.Thread:Java代码操控的类。  </li>
+<li>JavaThread:JVM中C++定义的类,一个JavaThread的instance代表了在JVM中的java.lang.Thread的instance, 它维护了线程的状态，并且维护一个指针指向java.lang.Thread创建的对象(oop)。它同时还维护了一个指针指向对应的OSThread，来获取底层操作系统创建的osthread的状态。  </li>
+<li>OSThread:JVM中C++定义的类，代表了JVM中对底层操作系统的osthread的抽象，它维护着实际操作系统创建的线程句柄handle，可以获取底层osthread的状态。  </li>
+<li>osthread:操作系统级别的线程，也就是真正意义上的线程，它的具体实现由操作系统完成。<br>在new一个java.lang.Thread时,仅仅是设置到ThreadName,ThreadGroup,Runnable等属性。当调用start()时,会依次创建上述其余三个对象并分配资源,随后运行Runnable。<br>PS:Java为什么不允许一个线程start()两次?每次的start()就是创建底层线程的过程,那么start()两次不就是创建两个线程吗?  </li>
+</ul>
+<h1 id="缓存-MESI-伪共享"><a href="#缓存-MESI-伪共享" class="headerlink" title="缓存/MESI/伪共享"></a>缓存/MESI/伪共享</h1><h2 id="缓存"><a href="#缓存" class="headerlink" title="缓存"></a>缓存</h2><p>对于Intel处理器来说L1,L2缓存有Core独享,L3整个CPU共享。整个缓存分为多个组，每组又由多行最小存储单元CacheLine(缓存行)组成，每个缓存行由1个有效位(标识次缓存行是否有效)，t个标记位(用来唯一标识该缓存行)，64(一般情况)字节(存储真正的数据)组成。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/cache.png" alt>  </p>
+<h2 id="MESI"><a href="#MESI" class="headerlink" title="MESI"></a>MESI</h2><p>一种缓存一致性协议(AMD/Intel各自有改进),协议将缓存行划分为各种状态,通过状态的检测来保证各Core间的缓存一致性。MESI仅作用于Cache和内存层面。<br>M:数据只存在本cache中,已被修改(与内存不一致)。<br>E:数据只存在本cache中,未被修改(与内存一致)。<br>S:数据存在多cache中但未被修改。<br>I:数据已经无效。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/mesi.png" alt><br>后来为减少缓存状态转移过程(其实就是core间cache的传输)所浪费的时间,在寄存器和L1 Cache之间又加了LoadBuffer和StoreBuffer，当要Load一个数据而数据在别的core的cache中时把读请求放到LoadBuffer中然后执行执行下面的指令(如果前后指令没有数据依赖性)，写数据时也是将数据写到StoreBuffer中然后在合适的时间将数据刷到cache中(这样的异步处理可能会引发数据不一致问题-&gt;指令重排序-&gt;Volatile)。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/cpu-cache-and-memory-ordering-8-638.jpg" alt>  </p>
+<h2 id="伪共享"><a href="#伪共享" class="headerlink" title="伪共享"></a>伪共享</h2><p>缓存数据的存取以缓存行为单位(64字节),为充分利用容量,加载缓存时一般填满64字节,如一个long类型长度为8的数组，当操作该数组中某一个值时，会将整个数组缓存至缓存行。但是多core在对该数组的不同数据(不同Index)操作时,由于MESI协议,各个core会不断竞争这个缓存行,这个缓存行会不断在core间来回传输,使得操作甚至退化为串行,这类问题称为伪共享。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/false-sharing.png" alt><br>解决伪共享的办法就是数据填充-&gt;填充无用的数据使被操作的数据间互相隔离(不会被加载到一个缓存行),Contended注解就提供了这个功能,ConcurrentHashMap就使用了这个注解。  </p>
+<h1 id="指令重排序-内存屏障"><a href="#指令重排序-内存屏障" class="headerlink" title="指令重排序/内存屏障"></a>指令重排序/内存屏障</h1><p>指令重排序个人理解:<br>分为编译器重排序和CPU重排序,其中CPU重排序称作乱序更恰当?编译器的重排序是编译器在保证单线程最终结果正确的前提下有意识的,主动的对于指令顺序的一种重排。CPU重排序我认为是一种在CPU执行指令期间由于cache miss(MESI一节中所提到的LoadBuffer/StoreBuffer)等原因所导致的一种无意识的重排序(乱序)。指令重排序在多线程环境下可能会导致错误的结果。<br>内存屏障是一种禁止指令重排序的手段,他表示在其之前的指令不会被重排到其后,相对于指令重排序,内存屏障也分为编译器/CPU屏障,CPU内存屏障是一条真正的指令(需要被CPU感知到)。对于CPU内存屏障,他要求CPU必须先处理完LoadBuffer/StoreBuffer中的指令。  </p>
+<h1 id="内存模型-内存可见性"><a href="#内存模型-内存可见性" class="headerlink" title="内存模型/内存可见性"></a>内存模型/内存可见性</h1><p>Java为屏蔽底层细节提供了抽象的内存模型:主内存可以类比于物理内存,线程内的工作内存可以类比为cache,线程对于所有数据的操作都必须先将主内存的数据复制到工作内存,线程间通过主内存共享传递变量。<br>内存可见性指的就是一个线程对于一个变量的修改是否可以立刻被其他线程看到(后续会讲到)。  </p>
+<h1 id="管程-对象头"><a href="#管程-对象头" class="headerlink" title="管程/对象头"></a>管程/对象头</h1><p>管程是一种用来监视线程对某些资源访问的工具,他需要编译器的支持(Java支持),JVM使用ObjectMonitor(C++)实现管程,他有两个队列,_WaitSet 和 _EntryList,用来保存ObjectWaiter对象列表(每个等待锁的线程都会被封装成ObjectWaiter对象),_owner指向持有Monitor对象的线程,当多个线程同时访问一段同步代码时,首先会进入 _EntryList 集合,当线程获取到对象的monitor后进入 _Owner 区域并把monitor中的owner变量设置为当前线程同时monitor中的计数器count加1,若线程调用 wait() 方法,将释放当前持有的monitor,owner变量恢复为null,count自减1,同时该线程进入 WaitSet集合中等待被唤醒。若当前线程执行完毕也将释放monitor(锁)并复位变量的值,以便其他线程进入获取monitor(锁) 。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/monitor.png" alt></p>
+<p>对象头是对象的一部分,在JVM中,对象在内存中的布局分为三块区域:对象头,实例数据和对齐填充。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/JavaThread1/objecthead.png" alt><br>MarkWord的中的LockWord指向了Monitor的起始地址。      </p>
+<h1 id="线程的状态"><a href="#线程的状态" class="headerlink" title="线程的状态"></a>线程的状态</h1><h2 id="NEW"><a href="#NEW" class="headerlink" title="NEW"></a>NEW</h2><p>实例化thread后,start前,thread状态就是NEW。  </p>
+<h2 id="RUNNABLE"><a href="#RUNNABLE" class="headerlink" title="RUNNABLE"></a>RUNNABLE</h2><p>正在运行的线程或可运行线程(等待CPU调度)。</p>
+<h2 id="BLOCKED"><a href="#BLOCKED" class="headerlink" title="BLOCKED"></a>BLOCKED</h2><p>线程在等待管程锁,如使用synchronized。  </p>
+<h2 id="WAITING"><a href="#WAITING" class="headerlink" title="WAITING"></a>WAITING</h2><p>不带timeout的Object.wait(),不带timeout的thread.join,LockSupport.park(),该状态的线程会等待其他线程的某些行为以唤醒他们。  </p>
+<h2 id="TIMED-WAITING"><a href="#TIMED-WAITING" class="headerlink" title="TIMED_WAITING"></a>TIMED_WAITING</h2><p>有等待时间的等待状态,thread.sleep(timeout),thread.join(timeout),Object.wait(timeout),LockSupport.parkNanos。  </p>
+<h2 id="TERMINATED"><a href="#TERMINATED" class="headerlink" title="TERMINATED"></a>TERMINATED</h2><p>已经运行完毕终止了的线程。  </p>
+<h1 id="线程的中断"><a href="#线程的中断" class="headerlink" title="线程的中断"></a>线程的中断</h1><p>java线程的中断并不会将线程立即停止运行,”中断”仅代表线程的一种状态(true/false)</p>
+<h2 id="isInterrupted"><a href="#isInterrupted" class="headerlink" title="isInterrupted()"></a>isInterrupted()</h2><p>实例方法,返回当前线程的中断状态</p>
+<h2 id="interrupted"><a href="#interrupted" class="headerlink" title="interrupted()"></a>interrupted()</h2><p>静态方法,该方法会返回当前线程是否被中断,同时将中断状态重置为false(意味着,如果连续调用两次,第二次一定会返回false),有点像getAndReset。  </p>
+<h2 id="interrupt"><a href="#interrupt" class="headerlink" title="interrupt()"></a>interrupt()</h2><p>实例方法,如果当前线程阻塞在sleep,join,wait(带不带参数都算,详见interrupt方法注释)那么线程会立即退出阻塞状态,并抛出InterruptedException(并不设置中断状态),如果线程阻塞在LockSupport.park上会立即退出阻塞状态并设置中断状态为true但不抛异常,如果线程正常活动,仅设置当前线程的中断状态为true。  </p>
+<h2 id="InterruptedException"><a href="#InterruptedException" class="headerlink" title="InterruptedException"></a>InterruptedException</h2><p>如果当前线程阻塞在诸如 Object#wait(),Thread#sleep()上时,被其他线程中断,那么就会抛出此异常。  </p>
+<h2 id="其他"><a href="#其他" class="headerlink" title="其他"></a>其他</h2><p>concurrent包下的很多工具类中的很多阻塞方法都提供了两个版本:响应中断/不响应中断(保留中断状态)<br>不响应中断意味着,当线程A阻塞在某一个方法上(比如抢锁)时,线程B调用A的interrupt方法,线程A并不会停止抢锁。</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://www.jianshu.com/p/3ce1b5e5a55e" target="_blank" rel="noopener">以JVM的角度看Java线程的创建与运行</a><br><a href="https://book.douban.com/subject/27078711/" target="_blank" rel="noopener">深入理解并行编程</a><br><a href="https://book.douban.com/subject/24722612/" target="_blank" rel="noopener">深入理解Java虚拟机</a><br><a href="http://hedengcheng.com/?p=648" target="_blank" rel="noopener">CPU Cache and Memory Ordering</a>  </p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/10/项目总结/" data-tooltip="项目总结" aria-label="上一篇: 项目总结">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/07/Tomcat源码/" data-tooltip="Tomcat源码" aria-label="下一篇: Tomcat源码">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/10/项目总结/" data-tooltip="项目总结" aria-label="上一篇: 项目总结">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/08/07/Tomcat源码/" data-tooltip="Tomcat源码" aria-label="下一篇: Tomcat源码">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

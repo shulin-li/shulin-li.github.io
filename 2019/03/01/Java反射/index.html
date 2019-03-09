@@ -1,0 +1,353 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>Java反射 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\nMethodgetDeclaredMethods()123public Method[] getDeclaredMethods() throws SecurityException &#123;    return copyMethods(privateGetDeclaredMethods(false));&#125;\nprivateGetDeclaredMethods(false)123456789101112131415161718private Method[] privateGetDeclaredMethods(boolean publicOnly) &#123;    Method[] res;    ReflectionData&lt;T&gt; rd = reflectionData();    if (rd != null) &#123;        res = publicOnly ? rd.declaredPublicMethods : rd.declaredMethods;        if (res != null) return res;    &#125;    // No cached value available; request value from VM    res = Reflection.filterMethods(this, getDeclaredMethods0(publicOnly));    if (rd != null) &#123;        if (publicOnly) &#123;            rd.declaredPublicMethods = res;        &#125; else &#123;            rd.declaredMethods = res;        &#125;    &#125;    return res;&#125;\n每个class实例内部都有一个ReflectionData,这个实例缓存了当前类的各种属性([]method,[]field,[]Constructor),真正的获取是通过native的getDeclaredMethods0拿到,其通过instanceKlass拿到Method数组,再将其包装为Java对象数组并返回。当获取到Method数组后,调用copyMethods遍历复制Method对象并返回。所以通过Class实例get method时,其返回的永远是一个新的对象,也就是说方法签名相同的两次get,这两个method对象的==判false,但是equals判true。  \ninvoke当获取到Method后,就可以通过invoke调用方法12345678910public Object invoke(Object obj, Object... args)    throws IllegalAccessException, IllegalArgumentException,       InvocationTargetException&#123;    MethodAccessor ma = methodAccessor;             // read volatile    if (ma == null) &#123;        ma = acquireMethodAccessor();    &#125;    return ma.invoke(obj, args);&#125;\n真正的方法调用是通过methodAccessor实现的,通过这一个中间层使得,invoke调用可以在native实现和java实现之间切换123456789101112131415161718public MethodAccessor newMethodAccessor(Method method) &#123;    if (noInflation &amp;&amp; !ReflectUtil.isVMAnonymousClass(method.getDeclaringClass())) &#123;        return new MethodAccessorGenerator().            generateMethod(method.getDeclaringClass(),                           method.getName(),                           method.getParameterTypes(),                           method.getReturnType(),                           method.getExceptionTypes(),                           method.getModifiers());    &#125; else &#123;        NativeMethodAccessorImpl acc =            new NativeMethodAccessorImpl(method);        DelegatingMethodAccessorImpl res =            new DelegatingMethodAccessorImpl(acc);        acc.setParent(res);        return res;    &#125;&#125;\n这里先关注native的实现  \nNativeMethodAccessorImp1private static native Object invoke0(Method m, Object obj, Object[] args)\n这里的native方法会根据m的receiver(obj)找到方法表(C++)再到最终的Java方法调用,其invoke方法中会进行一个计数+1操作,如果计数值&gt;15(方法调用次数超过15次),那么就会动态生成GeneratedMethodAccessor类。  \ngenerategenerate方法利用asm生成一个类,这个类的invoke方法就是调用method(代理的感觉)。通过generate,method的调用就不用再像native那样,要经历Java-&gt;C++-&gt;Java的路径,性能得到的提升,但是generate方法生成字节码本身就比较影响性能,所以使用了一个计数值,方法调用次数较少的时候走native,调用多就生成Java代码。  \n对GC的影响在generate方法的流程中,是全程不加锁的,所以当一个method的invoke被大量并发调用时,其可能会通过asm生成相当多的class,同时java为了让这些class可以卸载,每一次的generate最后都会new一个新的classLoader来load这个asm生成的class。所以对method的invoke调用可能导致perm被疯狂消耗引发full gc。   \n参考深入拆解 Java 虚拟机关于反射调用方法的一个log","dateCreated":"2019-03-01T20:12:21+08:00","dateModified":"2019-03-04T16:46:06+08:00","datePublished":"2019-03-01T20:12:21+08:00","description":"Java反射","headline":"Java反射","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/03/01/Java反射/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/03/01/Java反射/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="Java反射">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="Java反射">
+<meta property="og:url" content="http://yoursite.com/2019/03/01/Java反射/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Java反射">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-03-04T08:46:06.011Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Java反射">
+<meta name="twitter:description" content="Java反射">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Java反射
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-03-01T20:12:21+08:00">
+	
+		    3月 01, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#Method"><span class="toc-text">Method</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#getDeclaredMethods"><span class="toc-text">getDeclaredMethods()</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#invoke"><span class="toc-text">invoke</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#NativeMethodAccessorImp"><span class="toc-text">NativeMethodAccessorImp</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#generate"><span class="toc-text">generate</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#对GC的影响"><span class="toc-text">对GC的影响</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="Method"><a href="#Method" class="headerlink" title="Method"></a>Method</h1><h2 id="getDeclaredMethods"><a href="#getDeclaredMethods" class="headerlink" title="getDeclaredMethods()"></a>getDeclaredMethods()</h2><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> Method[] getDeclaredMethods() <span class="keyword">throws</span> SecurityException &#123;</span><br><span class="line">    <span class="keyword">return</span> copyMethods(privateGetDeclaredMethods(<span class="keyword">false</span>));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>privateGetDeclaredMethods(false)<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">private</span> Method[] privateGetDeclaredMethods(<span class="keyword">boolean</span> publicOnly) &#123;</span><br><span class="line">    Method[] res;</span><br><span class="line">    ReflectionData&lt;T&gt; rd = reflectionData();</span><br><span class="line">    <span class="keyword">if</span> (rd != <span class="keyword">null</span>) &#123;</span><br><span class="line">        res = publicOnly ? rd.declaredPublicMethods : rd.declaredMethods;</span><br><span class="line">        <span class="keyword">if</span> (res != <span class="keyword">null</span>) <span class="keyword">return</span> res;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="comment">// No cached value available; request value from VM</span></span><br><span class="line">    res = Reflection.filterMethods(<span class="keyword">this</span>, getDeclaredMethods0(publicOnly));</span><br><span class="line">    <span class="keyword">if</span> (rd != <span class="keyword">null</span>) &#123;</span><br><span class="line">        <span class="keyword">if</span> (publicOnly) &#123;</span><br><span class="line">            rd.declaredPublicMethods = res;</span><br><span class="line">        &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">            rd.declaredMethods = res;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> res;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>每个class实例内部都有一个ReflectionData,这个实例缓存了当前类的各种属性([]method,[]field,[]Constructor),真正的获取是通过native的getDeclaredMethods0拿到,其通过instanceKlass拿到Method数组,再将其包装为Java对象数组并返回。<br>当获取到Method数组后,调用copyMethods遍历复制Method对象并返回。<br>所以通过Class实例get method时,其返回的永远是一个新的对象,也就是说方法签名相同的两次get,这两个method对象的==判false,但是equals判true。  </p>
+<h2 id="invoke"><a href="#invoke" class="headerlink" title="invoke"></a>invoke</h2><p>当获取到Method后,就可以通过invoke调用方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> Object <span class="title">invoke</span><span class="params">(Object obj, Object... args)</span></span></span><br><span class="line"><span class="function">    <span class="keyword">throws</span> IllegalAccessException, IllegalArgumentException,</span></span><br><span class="line"><span class="function">       InvocationTargetException</span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">    MethodAccessor ma = methodAccessor;             <span class="comment">// read volatile</span></span><br><span class="line">    <span class="keyword">if</span> (ma == <span class="keyword">null</span>) &#123;</span><br><span class="line">        ma = acquireMethodAccessor();</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> ma.invoke(obj, args);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>真正的方法调用是通过methodAccessor实现的,通过这一个中间层使得,invoke调用可以在native实现和java实现之间切换<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> MethodAccessor <span class="title">newMethodAccessor</span><span class="params">(Method method)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">if</span> (noInflation &amp;&amp; !ReflectUtil.isVMAnonymousClass(method.getDeclaringClass())) &#123;</span><br><span class="line">        <span class="keyword">return</span> <span class="keyword">new</span> MethodAccessorGenerator().</span><br><span class="line">            generateMethod(method.getDeclaringClass(),</span><br><span class="line">                           method.getName(),</span><br><span class="line">                           method.getParameterTypes(),</span><br><span class="line">                           method.getReturnType(),</span><br><span class="line">                           method.getExceptionTypes(),</span><br><span class="line">                           method.getModifiers());</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        NativeMethodAccessorImpl acc =</span><br><span class="line">            <span class="keyword">new</span> NativeMethodAccessorImpl(method);</span><br><span class="line">        DelegatingMethodAccessorImpl res =</span><br><span class="line">            <span class="keyword">new</span> DelegatingMethodAccessorImpl(acc);</span><br><span class="line">        acc.setParent(res);</span><br><span class="line">        <span class="keyword">return</span> res;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>这里先关注native的实现  </p>
+<h3 id="NativeMethodAccessorImp"><a href="#NativeMethodAccessorImp" class="headerlink" title="NativeMethodAccessorImp"></a>NativeMethodAccessorImp</h3><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">native</span> Object <span class="title">invoke0</span><span class="params">(Method m, Object obj, Object[] args)</span></span></span><br></pre></td></tr></table></figure>
+<p>这里的native方法会根据m的receiver(obj)找到方法表(C++)再到最终的Java方法调用,其invoke方法中会进行一个计数+1操作,如果计数值&gt;15(方法调用次数超过15次),那么就会动态生成GeneratedMethodAccessor类。  </p>
+<h3 id="generate"><a href="#generate" class="headerlink" title="generate"></a>generate</h3><p>generate方法利用asm生成一个类,这个类的invoke方法就是调用method(代理的感觉)。<br>通过generate,method的调用就不用再像native那样,要经历Java-&gt;C++-&gt;Java的路径,性能得到的提升,但是generate方法生成字节码本身就比较影响性能,所以使用了一个计数值,方法调用次数较少的时候走native,调用多就生成Java代码。  </p>
+<h2 id="对GC的影响"><a href="#对GC的影响" class="headerlink" title="对GC的影响"></a>对GC的影响</h2><p>在generate方法的流程中,是全程不加锁的,所以当一个method的invoke被大量并发调用时,其可能会通过asm生成相当多的class,同时java为了让这些class可以卸载,每一次的generate最后都会new一个新的classLoader来load这个asm生成的class。<br>所以对method的invoke调用可能导致perm被疯狂消耗引发full gc。   </p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://time.geekbang.org/column/108" target="_blank" rel="noopener">深入拆解 Java 虚拟机</a><br><a href="https://rednaxelafx.iteye.com/blog/548536" target="_blank" rel="noopener">关于反射调用方法的一个log</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/01/类加载/" data-tooltip="类加载" aria-label="上一篇: 类加载">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/02/27/Oop-Klass/" data-tooltip="Oop-Klass(一)" aria-label="下一篇: Oop-Klass(一)">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/01/类加载/" data-tooltip="类加载" aria-label="上一篇: 类加载">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/02/27/Oop-Klass/" data-tooltip="Oop-Klass(一)" aria-label="下一篇: Oop-Klass(一)">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
