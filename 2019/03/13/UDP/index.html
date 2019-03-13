@@ -6,25 +6,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="generator" content="一条咸鱼">
-    <title>周报3 JVM - 一条咸鱼</title>
+    <title>UDP - 一条咸鱼</title>
     <meta name="author" content="一条咸鱼">
     
     
         <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
     
     
-    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\nJVMTLAB当多线程new对象时，每一次的对象分配都需要对内存做同步操作，TLAB是在new Thread时就为线程分配的私有内存空间(由start end两个占位指针”占住”该空间)，该线程的new操作优先在TLAB内分配(指针碰撞)。TLAB剩余内存不够时的分配细节:如果TLAB剩余空间小于”允许浪费的最大空间”，那么将该空间以数组填充并尝试分配一个新的TLAB；否则将对象直接分配在Eden区(不废弃当前TLAB)。\n栈上分配/标量替换JVM通过对象逃逸分析性发现某个对象作用域仅限于方法内或线程内,则可以通过栈上分配将对象直接分配在栈上，以减少垃圾回收的压力，但hotspot并没有实现真正的栈上分配，他采用的是标量替换，即并不创建完整的对象，而选择将对象中的字段当成独立的局部变量。   \n多态实现JVM为每个类维护一个方法表(vtable)，当类A继承类B时，类A会先复制类B的方法表，然后解析类A自己的方法并添加到方法表，随后判断是否有方法重写，如果有将vtable中该方法对应的指针指向重写方法。当以父类引用调用子类重写方法时(invokevirtual指令)，会先去寻找操作数栈中第一个引用指向的对象的实际类型，然后去方法表中进行方法调用。  \n参考G1算法之R大回答关于incremental update与SATB的一点理解G1收集器理解和原理分析G1收集器之对象分配过程HotSpot实战  ","dateCreated":"2018-05-30T18:50:41+08:00","dateModified":"2019-03-05T17:36:46+08:00","datePublished":"2018-05-30T18:50:41+08:00","description":"JVM","headline":"周报3 JVM","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/05/30/周报3JVM/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/05/30/周报3JVM/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png"}</script>
-    <meta name="description" content="JVM">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n  \n不可达当发送一个UDP包到目标主机时,如果指定端口没有对应的进程,那么服务端会返回一个ICMP差错报文,表示端口不可达,虽然ICMP是网络层协议,但是这个ICMP差错报文本身包含了端口的信息(源端口,目的端口),但由于UDP本身不是面向连接的,所以这个ICMP被返回时,不会被返回到相应的发送socket,如果想要拿到相应的ICMP错误信息,需要在发送数据前,显示调用connect,这个connect指的并不是建立连接,而是在本地建立一个五元组(源IP,源port,协议号,目的IP,目的port),这样ICMP报文返回时就可以根据这个五元组找到相应的socket,继而返回错误信息。但在Java层面虽然对于DatagramSocket和DatagramChannel都提供了connect方法且也定义了PortUnreachableException,但是在DatagramSocket的connect方法注释中说道  \n\nIf the remote destination to which the socket is connected does not  exist, or is otherwise unreachable, and if an ICMP destination unreachable  packet has been received for that address, then a subsequent call to  send or receive may throw a PortUnreachableException. Note, there is no  guarantee that the exception will be thrown.也就是并不保证PortUnreachableException的抛出,自己在测试过程中Win10和Linux3.1都没有抛出该异常。  \n\nUDP和epollepoll本身是为了更高效的处理各种状态的连接,但是UDP本身并没有连接性,然而仍然可以为每个客户端建立一个socket(new fd)以“虚拟化”的表示一个连接然后将其bind到server的地址再与client进行connect并将其加入epoll fd,这样后续该client的数据都会发送到相应的socket并且可以使用epoll的通知机制。这种模型对于客户端也有要求,他要求客户端的端口不能随意变动(需要bind),否则为其建立的new fd将失效个人感觉这种操作就是为了为UDP添加一个“连接性”,并不能得到性能上的提升\n参考TCP/IP详解卷3关于UDP接收icmp端口不可达(port unreachable)告知你不为人知的 UDP)","dateCreated":"2019-03-13T11:10:20+08:00","dateModified":"2019-03-13T16:08:19+08:00","datePublished":"2019-03-13T11:10:20+08:00","description":"UDP","headline":"UDP","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/03/13/UDP/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/03/13/UDP/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"}</script>
+    <meta name="description" content="UDP">
 <meta property="og:type" content="blog">
-<meta property="og:title" content="周报3 JVM">
-<meta property="og:url" content="http://yoursite.com/2018/05/30/周报3JVM/index.html">
+<meta property="og:title" content="UDP">
+<meta property="og:url" content="http://yoursite.com/2019/03/13/UDP/index.html">
 <meta property="og:site_name" content="一条咸鱼">
-<meta property="og:description" content="JVM">
+<meta property="og:description" content="UDP">
 <meta property="og:locale" content="zh-cn">
-<meta property="og:updated_time" content="2019-03-05T09:36:46.948Z">
+<meta property="og:updated_time" content="2019-03-13T08:08:19.459Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="周报3 JVM">
-<meta name="twitter:description" content="JVM">
+<meta name="twitter:title" content="UDP">
+<meta name="twitter:description" content="UDP">
 <meta property="fb:app_id" content="[object Object]">
     
     
@@ -34,8 +34,8 @@
         <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
     
     
-        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png"/>
-        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png" />
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png" />
     
     
         <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
@@ -141,14 +141,14 @@
                 <div class="post-header main-content-wrap text-center">
     
         <h1 class="post-title">
-            周报3 JVM
+            UDP
         </h1>
     
     
         <div class="post-meta">
-    <time datetime="2018-05-30T18:50:41+08:00">
+    <time datetime="2019-03-13T11:10:20+08:00">
 	
-		    5月 30, 2018
+		    3月 13, 2019
     	
     </time>
     
@@ -170,12 +170,14 @@
     
     <div class="post-content markdown">
         <div class="main-content-wrap">
-            <!-- excerpt -->  <p></p>
-<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#JVM"><span class="toc-text">JVM</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#TLAB"><span class="toc-text">TLAB</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#栈上分配-标量替换"><span class="toc-text">栈上分配/标量替换</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#多态实现"><span class="toc-text">多态实现</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
-<h1 id="JVM"><a href="#JVM" class="headerlink" title="JVM"></a>JVM</h1><h2 id="TLAB"><a href="#TLAB" class="headerlink" title="TLAB"></a>TLAB</h2><p>当多线程new对象时，每一次的对象分配都需要对内存做同步操作，TLAB是在new Thread时就为线程分配的私有内存空间(由start end两个占位指针”占住”该空间)，该线程的new操作优先在TLAB内分配(指针碰撞)。<br>TLAB剩余内存不够时的分配细节:如果TLAB剩余空间小于”允许浪费的最大空间”，那么将该空间以数组填充并尝试分配一个新的TLAB；否则将对象直接分配在Eden区(不废弃当前TLAB)。</p>
-<h2 id="栈上分配-标量替换"><a href="#栈上分配-标量替换" class="headerlink" title="栈上分配/标量替换"></a>栈上分配/标量替换</h2><p>JVM通过对象逃逸分析性发现某个对象作用域仅限于方法内或线程内,则可以通过栈上分配将对象直接分配在栈上，以减少垃圾回收的压力，但hotspot并没有实现真正的栈上分配，他采用的是标量替换，即并不创建完整的对象，而选择将对象中的字段当成独立的局部变量。   </p>
-<h2 id="多态实现"><a href="#多态实现" class="headerlink" title="多态实现"></a>多态实现</h2><p>JVM为每个类维护一个方法表(vtable)，当类A继承类B时，类A会先复制类B的方法表，然后解析类A自己的方法并添加到方法表，随后判断是否有方法重写，如果有将vtable中该方法对应的指针指向重写方法。当以父类引用调用子类重写方法时(invokevirtual指令)，会先去寻找操作数栈中第一个引用指向的对象的实际类型，然后去方法表中进行方法调用。  </p>
-<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="http://hllvm.group.iteye.com/group/topic/44381#post-272188" target="_blank" rel="noopener">G1算法之R大回答</a><br><a href="http://hllvm.group.iteye.com/group/topic/44529" target="_blank" rel="noopener">关于incremental update与SATB的一点理解</a><br><a href="https://liuzhengyang.github.io/2017/06/07/garbage-first-collector/" target="_blank" rel="noopener">G1收集器理解和原理分析</a><br><a href="https://www.jianshu.com/p/a0efa489b99f" target="_blank" rel="noopener">G1收集器之对象分配过程</a><br><a href="https://book.douban.com/subject/25847620/" target="_blank" rel="noopener">HotSpot实战</a>  </p>
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#不可达"><span class="toc-text">不可达</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#UDP和epoll"><span class="toc-text">UDP和epoll</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>  
+<h1 id="不可达"><a href="#不可达" class="headerlink" title="不可达"></a>不可达</h1><p>当发送一个UDP包到目标主机时,如果指定端口没有对应的进程,那么服务端会返回一个ICMP差错报文,表示端口不可达,虽然ICMP是网络层协议,但是这个ICMP差错报文本身包含了端口的信息(源端口,目的端口),但由于UDP本身不是面向连接的,所以这个ICMP被返回时,不会被返回到相应的发送socket,如果想要拿到相应的ICMP错误信息,需要在发送数据前,显示调用connect,这个connect指的并不是建立连接,而是在本地建立一个五元组(源IP,源port,协议号,目的IP,目的port),这样ICMP报文返回时就可以根据这个五元组找到相应的socket,继而返回错误信息。<br>但在Java层面虽然对于DatagramSocket和DatagramChannel都提供了connect方法且也定义了PortUnreachableException,但是在DatagramSocket的connect方法注释中说道  </p>
+<blockquote>
+<p>If the remote destination to which the socket is connected does not  exist, or is otherwise unreachable, and if an ICMP destination unreachable  packet has been received for that address, then a subsequent call to  send or receive may throw a PortUnreachableException. Note, there is no  guarantee that the exception will be thrown.<br>也就是并不保证PortUnreachableException的抛出,自己在测试过程中Win10和Linux3.1都没有抛出该异常。  </p>
+</blockquote>
+<h1 id="UDP和epoll"><a href="#UDP和epoll" class="headerlink" title="UDP和epoll"></a>UDP和epoll</h1><p>epoll本身是为了更高效的处理各种状态的连接,但是UDP本身并没有连接性,然而仍然可以为每个客户端建立一个socket(new fd)以“虚拟化”的表示一个连接然后将其bind到server的地址再与client进行connect并将其加入epoll fd,这样后续该client的数据都会发送到相应的socket并且可以使用epoll的通知机制。<br>这种模型对于客户端也有要求,他要求客户端的端口不能随意变动(需要bind),否则为其建立的new fd将失效<br>个人感觉这种操作就是为了为UDP添加一个“连接性”,并不能得到性能上的提升</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://book.douban.com/subject/26790662/" target="_blank" rel="noopener">TCP/IP详解卷3</a><br><a href="http://blog.chinaunix.net/uid-28458801-id-4990181.html" target="_blank" rel="noopener">关于UDP接收icmp端口不可达(port unreachable)</a><br><a href="[https://cloud.tencent.com/developer/article/1004555](https://cloud.tencent.com/developer/article/1004555">告知你不为人知的 UDP</a>)</p>
             
 
         </div>
@@ -188,8 +190,7 @@
         <ul class="post-actions post-action-nav">
             <li class="post-action">
                 
-                    
-                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring/" data-tooltip="周报4 Spring" aria-label="上一篇: 周报4 Spring">
+                    <a class="post-action-btn btn btn--disabled">
                 
                     <i class="fa fa-angle-left" aria-hidden="true"></i>
                     <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
@@ -198,7 +199,7 @@
             <li class="post-action">
                 
                     
-                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/29/周报2Redis/" data-tooltip="周报2 Redis" aria-label="下一篇: 周报2 Redis">
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/06/TCP的连接/" data-tooltip="TCP" aria-label="下一篇: TCP">
                 
                     <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
                     <i class="fa fa-angle-right" aria-hidden="true"></i>
@@ -250,8 +251,7 @@
         <ul class="post-actions post-action-nav">
             <li class="post-action">
                 
-                    
-                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring/" data-tooltip="周报4 Spring" aria-label="上一篇: 周报4 Spring">
+                    <a class="post-action-btn btn btn--disabled">
                 
                     <i class="fa fa-angle-left" aria-hidden="true"></i>
                     <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
@@ -260,7 +260,7 @@
             <li class="post-action">
                 
                     
-                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/29/周报2Redis/" data-tooltip="周报2 Redis" aria-label="下一篇: 周报2 Redis">
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/06/TCP的连接/" data-tooltip="TCP" aria-label="下一篇: TCP">
                 
                     <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
                     <i class="fa fa-angle-right" aria-hidden="true"></i>
