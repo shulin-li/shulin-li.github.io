@@ -1,0 +1,347 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>项目的坑 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\nHttpClint3.X的bug与pinpoint开发者反应,在使用SDK上传文件的时候,出现Unbuffered entity enclosing request can not be repeated的异常信息,这个问题在本地测试的时候并没有出现过,根据对方截图的异常堆栈信息,定位了EntityEnclosingMethod类中抛异常的地方1234if ((this.repeatCount &gt; 0) &amp;&amp; !requestEntity.isRepeatable()) &#123;    throw new ProtocolException(        \"Unbuffered entity enclosing request can not be repeated.\");&#125;\n这个类的实现类是putMethod和postMethod(SDK中使用的put),repeatCount记录的是writeRequestBody这个向服务端写数据的方法的调用次数,这里抛出异常,说明这个方法在httpclient真正向服务端写数据之前,已经被调用过一次了,所以怀疑由于开发者的网络原因,导致方法第一次调用失败,然后重试,导致第一个条件为true接下来看isRepeatable方法,SDK中使用的inputStreamEntity123public boolean isRepeatable() &#123;    return buffer != null;&#125;\n他的实现很简单,就是判断buffer是否为null,于是开始寻找buffer是在哪里会被write,最终发现,要想触发buffer的缓存,需要在实例化entity的时候传入一个length参数,而SDK中并没有传入,现在完全确定了异常的原因然而自己还是太年轻,当时将SDK修改为entity的实例化时传入length,结果对方又反馈,这次没有抛异常,但是上传的对象,大小为0,也就是啥内容都没传。??????????????不是buffer已经缓存了吗?????????再次来到httpclient的源码,这次关注的是“向服务端写数据”,这个最终会来到entity的writeRequest方法123456789101112131415public void writeRequest(OutputStream out) throws IOException &#123;      if (content != null) &#123;//content就是实例化时传入的stream        byte[] tmp = new byte[4096];        int total = 0;        int i = 0;        while ((i = content.read(tmp)) &gt;= 0) &#123;            out.write(tmp, 0, i);            total += i;        &#125;            &#125; else if (buffer != null) &#123;        out.write(buffer);    &#125; else &#123;        throw new IllegalStateException(\"Content must be set before entity is written\");    &#125;&#125;\n一脸懵逼,这是啥操作?entity实例化的时候,必须要传非null的stream,内部还用一个byte数组做缓存,结果读的时候还判断content是否为null,不为null就读stream(怎么会是null啊!!!!!),stream内容都在之前被读走了,不可重复读的流,再读第二次能读出个锤子!!!这缓存要你何用???这应该是httpclient3的一个bug,最终换成4,问题完美解决…….  \nhttpclient4竟然还要设置默认header解决上一个问题时,只测试了原先出问题的地方,发现不再出问题了,而且自从换了4以后,也没有什么其他问题,直到今天,有开发者反应SDK的生成分享链接这个功能服务端返回AccessDenied,这个功能的逻辑是先判断bucket是不是公有读,如果是,SDK端直接拼接返回对象链接,如果不是,就要去服务端请求生成一个分享链接的token测试之后,发现公有读的bucket能正常响应,但是私有读却不行,当时的第一反应是去查看服务端日志,发现确实说权限不允许,这就奇了个怪了,之前测试都没问题啊,怎么突然就出问题了呢然后就开始了调试之路,先在测试环境,增加代码中的log输入,重新编译部署,调整服务器端的log级别,发现SDK端的签名确实和服务端打印的不一样(服务器端除了检查账号,密码以外,还有签名校验),但是这个签名的功能并不是我写的,而且这块代码还挺复杂,只能硬着头皮看,再理清了基本逻辑之后,在服务器端的特定地方继续加log输出,对比SDK端的debug发现服务器端的签名元素中比SDK端多了一个content-Type,这就更奇怪了,SDK端根本没有设置contentType,这个header是哪来的呢,由于这次没有什么其他信息辅助,所以只能一层一层debug,观察header的变化。结果发现httpclient4.5中,有一个HttpRequestInterceptor接口,其实现类是在发送请求前,对请求进行一些封装,通过debug发现一个RequestContent类实现了这个接口,并且有如下逻辑1234if (entity.getContentType() != null &amp;&amp; !request.containsHeader(        HTTP.CONTENT_TYPE )) &#123;    request.addHeader(entity.getContentType());&#125;\n在这里发现如果没有设置请求的content-type,这里将进行添加(默认是”text/plain; charset=ISO-8859-1”),这也就导致SDK进行签名的时候,是没有content-type的,将签名sign发送到服务端之后,服务端以相同的算法,进行签名并与sign对比,但是服务端解析到了content-type,最终导致签名不通过,返回AccessDenied,最终在SDK端,由自己添加上content-type,问题解决……  \nBug总结这两个问题,让我充分体会到了测试的重要性第一个bug在我网络环境比较好,一切操作正常的情况下,根本没有出现过,开发的时候也没有考虑过,想的太简单了。第二个bug更是不应该,我在把httpclient从3换成4之后,只想着解决第一个bug的问题,其他的测试全都没测(我为了快速打jar包,还专门把test注释掉了……..),这种行为属实弟弟","dateCreated":"2019-03-20T17:29:38+08:00","dateModified":"2019-03-20T21:00:52+08:00","datePublished":"2019-03-20T17:29:38+08:00","description":"项目中的坑","headline":"项目的坑","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/03/20/项目中的坑/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/03/20/项目中的坑/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg"}</script>
+    <meta name="description" content="项目中的坑">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="项目的坑">
+<meta property="og:url" content="http://yoursite.com/2019/03/20/项目中的坑/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="项目中的坑">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-03-20T13:00:52.608Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="项目的坑">
+<meta name="twitter:description" content="项目中的坑">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            项目的坑
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-03-20T17:29:38+08:00">
+	
+		    3月 20, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt --><p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#HttpClint3-X的bug与pinpoint"><span class="toc-text">HttpClint3.X的bug与pinpoint</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#httpclient4竟然还要设置默认header"><span class="toc-text">httpclient4竟然还要设置默认header</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#Bug总结"><span class="toc-text">Bug总结</span></a></li></ol>
+<h1 id="HttpClint3-X的bug与pinpoint"><a href="#HttpClint3-X的bug与pinpoint" class="headerlink" title="HttpClint3.X的bug与pinpoint"></a>HttpClint3.X的bug与pinpoint</h1><p>开发者反应,在使用SDK上传文件的时候,出现Unbuffered entity enclosing request can not be repeated的异常信息,这个问题在本地测试的时候并没有出现过,根据对方截图的异常堆栈信息,定位了EntityEnclosingMethod类中抛异常的地方<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> ((<span class="keyword">this</span>.repeatCount &gt; <span class="number">0</span>) &amp;&amp; !requestEntity.isRepeatable()) &#123;</span><br><span class="line">    <span class="keyword">throw</span> <span class="keyword">new</span> ProtocolException(</span><br><span class="line">        <span class="string">"Unbuffered entity enclosing request can not be repeated."</span>);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>这个类的实现类是putMethod和postMethod(SDK中使用的put),repeatCount记录的是writeRequestBody这个向服务端写数据的方法的调用次数,这里抛出异常,说明这个方法在httpclient真正向服务端写数据之前,已经被调用过一次了,所以怀疑由于开发者的网络原因,导致方法第一次调用失败,然后重试,导致第一个条件为true<br>接下来看isRepeatable方法,SDK中使用的inputStreamEntity<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">boolean</span> <span class="title">isRepeatable</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    <span class="keyword">return</span> buffer != <span class="keyword">null</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>他的实现很简单,就是判断buffer是否为null,于是开始寻找buffer是在哪里会被write,最终发现,要想触发buffer的缓存,需要在实例化entity的时候传入一个length参数,而SDK中并没有传入,现在完全确定了异常的原因<br>然而自己还是太年轻,当时将SDK修改为entity的实例化时传入length,结果对方又反馈,这次没有抛异常,但是上传的对象,大小为0,也就是啥内容都没传。<br>??????????????不是buffer已经缓存了吗?????????<br>再次来到httpclient的源码,这次关注的是“向服务端写数据”,这个最终会来到entity的writeRequest方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">writeRequest</span><span class="params">(OutputStream out)</span> <span class="keyword">throws</span> IOException </span>&#123;  </span><br><span class="line">    <span class="keyword">if</span> (content != <span class="keyword">null</span>) &#123;<span class="comment">//content就是实例化时传入的stream</span></span><br><span class="line">        <span class="keyword">byte</span>[] tmp = <span class="keyword">new</span> <span class="keyword">byte</span>[<span class="number">4096</span>];</span><br><span class="line">        <span class="keyword">int</span> total = <span class="number">0</span>;</span><br><span class="line">        <span class="keyword">int</span> i = <span class="number">0</span>;</span><br><span class="line">        <span class="keyword">while</span> ((i = content.read(tmp)) &gt;= <span class="number">0</span>) &#123;</span><br><span class="line">            out.write(tmp, <span class="number">0</span>, i);</span><br><span class="line">            total += i;</span><br><span class="line">        &#125;        </span><br><span class="line">    &#125; <span class="keyword">else</span> <span class="keyword">if</span> (buffer != <span class="keyword">null</span>) &#123;</span><br><span class="line">        out.write(buffer);</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        <span class="keyword">throw</span> <span class="keyword">new</span> IllegalStateException(<span class="string">"Content must be set before entity is written"</span>);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>一脸懵逼,这是啥操作?<br>entity实例化的时候,必须要传非null的stream,内部还用一个byte数组做缓存,结果读的时候还判断content是否为null,不为null就读stream(怎么会是null啊!!!!!),stream内容都在之前被读走了,不可重复读的流,再读第二次能读出个锤子!!!这缓存要你何用???<br>这应该是httpclient3的一个bug,最终换成4,问题完美解决…….  </p>
+<h1 id="httpclient4竟然还要设置默认header"><a href="#httpclient4竟然还要设置默认header" class="headerlink" title="httpclient4竟然还要设置默认header"></a>httpclient4竟然还要设置默认header</h1><p>解决上一个问题时,只测试了原先出问题的地方,发现不再出问题了,而且自从换了4以后,也没有什么其他问题,直到今天,有开发者反应SDK的生成分享链接这个功能服务端返回AccessDenied,这个功能的逻辑是先判断bucket是不是公有读,如果是,SDK端直接拼接返回对象链接,如果不是,就要去服务端请求生成一个分享链接的token<br>测试之后,发现公有读的bucket能正常响应,但是私有读却不行,当时的第一反应是去查看服务端日志,发现确实说权限不允许,这就奇了个怪了,之前测试都没问题啊,怎么突然就出问题了呢<br>然后就开始了调试之路,先在测试环境,增加代码中的log输入,重新编译部署,调整服务器端的log级别,发现SDK端的签名确实和服务端打印的不一样(服务器端除了检查账号,密码以外,还有签名校验),但是这个签名的功能并不是我写的,而且这块代码还挺复杂,只能硬着头皮看,再理清了基本逻辑之后,在服务器端的特定地方继续加log输出,对比SDK端的debug发现服务器端的签名元素中比SDK端多了一个content-Type,这就更奇怪了,SDK端根本没有设置contentType,这个header是哪来的呢,由于这次没有什么其他信息辅助,所以只能一层一层debug,观察header的变化。<br>结果发现httpclient4.5中,有一个HttpRequestInterceptor接口,其实现类是在发送请求前,对请求进行一些封装,通过debug发现一个RequestContent类实现了这个接口,并且有如下逻辑<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> (entity.getContentType() != <span class="keyword">null</span> &amp;&amp; !request.containsHeader(</span><br><span class="line">        HTTP.CONTENT_TYPE )) &#123;</span><br><span class="line">    request.addHeader(entity.getContentType());</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>在这里发现如果没有设置请求的content-type,这里将进行添加(默认是”text/plain; charset=ISO-8859-1”),这也就导致SDK进行签名的时候,是没有content-type的,将签名sign发送到服务端之后,服务端以相同的算法,进行签名并与sign对比,但是服务端解析到了content-type,最终导致签名不通过,返回AccessDenied,最终在SDK端,由自己添加上content-type,问题解决……  </p>
+<h1 id="Bug总结"><a href="#Bug总结" class="headerlink" title="Bug总结"></a>Bug总结</h1><p>这两个问题,让我充分体会到了测试的重要性<br>第一个bug在我网络环境比较好,一切操作正常的情况下,根本没有出现过,开发的时候也没有考虑过,想的太简单了。<br>第二个bug更是不应该,我在把httpclient从3换成4之后,只想着解决第一个bug的问题,其他的测试全都没测(我为了快速打jar包,还专门把test注释掉了……..),这种行为属实弟弟</p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/13/UDP/" data-tooltip="UDP" aria-label="下一篇: UDP">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/13/UDP/" data-tooltip="UDP" aria-label="下一篇: UDP">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
