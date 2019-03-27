@@ -1,0 +1,368 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>周报4 SpringMVC - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":" \n\nSpringMVCDispatchServlet的分发所有的请求都会到达DispatchServlet，他重写了doService()方法  \n12345try &#123;  \tdoDispatch(request, response);  &#125;\ndoDispatch主要的功能就是根据根据url找到对应的method和interceptor，组合构成一个HandlerExecutionChain。  \nurl与Controller的映射HandlerMethod类SpringMVC使用HandlerMethod类对应一个个的url，其封装了方法参数，注解，返回值等信息，他的子类InvocableHandlerMethod的子类ServletInvocableHandlerMethod用于对应一个个的请求，每当有一个新的请求时，就会实例化一个ServletInvocableHandlerMethod。  \nRequestMappingInfo类RequestMappingInfo类封装了url，请求方法，请求条件等信息的一个类，对应一个个的url。  \nRequestMappingHandlerMapping类该类用于处理请求与Method的映射，其父类AbstractHandlerMethodMapping实现了InitializingBean接口,所以当他被实例化后,会调用他的afterPropertiesSet方法,这里会扫描所有的beanName,然后遍历判断每个bean是否是Controller(Handler)AbstractHandlerMethodMapping.initHandlerMethods()  \n123456789101112131415      String[] beanNames = (this.detectHandlerMethodsInAncestorContexts ?\t\tBeanFactoryUtils.beanNamesForTypeIncludingAncestors(obtainApplicationContext(), Object.class) :\t\tobtainApplicationContext().getBeanNamesForType(Object.class));for (String beanName : beanNames) &#123;\tif (!beanName.startsWith(SCOPED_TARGET_NAME_PREFIX)) &#123;\t\tClass&lt;?&gt; beanType = null;\t\ttry &#123;\t\t\tbeanType = obtainApplicationContext().getType(beanName);\t\t&#125;//......\t\tif (beanType != null &amp;&amp; isHandler(beanType)) &#123;如果是一个handler\t\t\tdetectHandlerMethods(beanName);\t\t&#125;\t&#125;&#125;handlerMethodsInitialized(getHandlerMethods());\nAbstractHandlerMethodMapping.detectHandlerMethods(beanName)如果bean是使用CGLib实例化的，userType为其bean的父类，否则userType=handlerType。getMappingForMethod()在其子类RequestMappingHandlerMapping中实现，主要功能是实例化RequestMappingInfo。  \n123456789101112131415161718192021Class&lt;?&gt; handlerType = (handler instanceof String ?\t\tobtainApplicationContext().getType((String) handler) : handler.getClass());if (handlerType != null) &#123;\tfinal Class&lt;?&gt; userType = ClassUtils.getUserClass(handlerType);\tMap&lt;Method, T&gt; methods = MethodIntrospector.selectMethods(userType,\t\t\t(MethodIntrospector.MetadataLookup&lt;T&gt;) method -&gt; &#123;\t\t\t\ttry &#123;\t\t\t\t\treturn getMappingForMethod(method, userType);\t\t\t\t&#125;\t\t\t\tcatch (Throwable ex) &#123;\t\t\t\t\tthrow new IllegalStateException(\"Invalid mapping on handler class [\" +\t\t\t\t\t\t\tuserType.getName() + \"]: \" + method, ex);\t\t\t\t&#125;\t\t\t&#125;);\t\tmethods.forEach((method, mapping) -&gt; &#123;\t\tMethod invocableMethod = AopUtils.selectInvocableMethod(method, userType);\t\tregisterHandlerMethod(handler, invocableMethod, mapping);\t&#125;);&#125;\nRequestMappingHandlerMapping.getMappingForMethod()主要是找到Method和Controller类上的RequestMapping注解，并将两个值合并组成url。  \n123456789RequestMappingInfo info = createRequestMappingInfo(method);  if (info != null) &#123;\tRequestMappingInfo typeInfo = createRequestMappingInfo(handlerType);\tif (typeInfo != null) &#123;\t\tinfo = typeInfo.combine(info);\t&#125;&#125;return info;\nregisterHandlerMethod（）-&gt; AbstractHandlerMethodMapping.MappingRegistry.register()方法的主要功能是实例化HandlerMethod，并注册到map中。12345678910HandlerMethod handlerMethod = createHandlerMethod(handler, method);assertUniqueMethodMapping(handlerMethod, mapping);this.mappingLookup.put(mapping, handlerMethod);List&lt;String&gt; directUrls = getDirectUrls(mapping);for (String url : directUrls) &#123;\tthis.urlLookup.add(url, mapping);&#125;\n需要注意的是,在HandlerMethod类中,有一个Bean字段,本意是controller,但是在这里的实例化中,这个handler是String,需要在后面进行判断并调用getBean。至此RequestMappingHandlerMapping中有两个重要map：mappingLookup，key为RequestMappingInfo，value为HandlerMethod。urlLookup，key为String(url),value为RequestMappingInfo。  \n回看doDispatch()1mappedHandler = getHandler(processedRequest);\n该方法会一路调用到AbstractHandlerMethodMapping.lookupHandlerMethod(),首先根据url找到requestMappingInfo实例，addMatchingMappings()中会根据requestMappingInfo找到handlerMethod，并添加到matches中，最后通过RequestMappingInfo的compareTo方法找到优先级最高的Match123456789101112131415161718192021222324List&lt;Match&gt; matches = new ArrayList&lt;&gt;();List&lt;T&gt; directPathMatches = this.mappingRegistry.getMappingsByUrl(lookupPath);if (directPathMatches != null) &#123;\taddMatchingMappings(directPathMatches, matches, request);&#125;if (matches.isEmpty()) &#123;\t// No choice but to go through all mappings...\taddMatchingMappings(this.mappingRegistry.getMappings().keySet(), matches, request);&#125;if (!matches.isEmpty()) &#123;\tComparator&lt;Match&gt; comparator = new MatchComparator(getMappingComparator(request));\tmatches.sort(comparator);\tMatch bestMatch = matches.get(0);\tif (matches.size() &gt; 1) &#123;\t\tif (CorsUtils.isPreFlightRequest(request)) &#123;\t\t\treturn PREFLIGHT_AMBIGUOUS_MATCH;\t\t&#125;\t\tMatch secondBestMatch = matches.get(1);\t\t//.......\t&#125;\thandleMatch(bestMatch.mapping, lookupPath, request);\treturn bestMatch.handlerMethod;&#125;\n现在已经拿到了匹配度最高的HandlerMethod,接下来会执行1return (handlerMethod != null ? handlerMethod.createWithResolvedBean() : null);\n这里会判断handlerMethod的bean instanceof string,是的话会getBean获取controller接下来就是调用AbstractHandlerMapping.getHandlerExecutionChain()方法，根据已有的Handler和配置的Interceptor组成HandlerExecutionChain。    \n方法调用doDispatch方法会根据返回的chain的handler查找匹配的Adapter,再调用Adapter的handle方法,一路走到invokeHandlerMethod方法1234567ServletInvocableHandlerMethod invocableMethod = createInvocableHandlerMethod(handlerMethod);if (this.argumentResolvers != null) &#123;\tinvocableMethod.setHandlerMethodArgumentResolvers(this.argumentResolvers);&#125;if (this.returnValueHandlers != null) &#123;\tinvocableMethod.setHandlerMethodReturnValueHandlers(this.returnValueHandlers);&#125;\n首先创建真正要处理请求的ServletInvocableHandlerMathod实例,然后将Adapter的参数解析器都设置到其中,接下来的主要逻辑就转到ServletInvocableHandlerMathod的invokeForRequest中了,主要逻辑就是参数解析以及反射方法调用12Object[] args = getMethodArgumentValues(request, mavContainer, providedArgs);Object returnValue = doInvoke(args);\n参数解析先关注参数解析的主要逻辑12345678910for (int i = 0; i &lt; parameters.length; i++) &#123;\tMethodParameter parameter = parameters[i];\tif (this.argumentResolvers.supportsParameter(parameter)) &#123;\t\ttry &#123;\t\t\targs[i] = this.argumentResolvers.resolveArgument(\t\t\t\t\tparameter, mavContainer, request, this.dataBinderFactory);\t\t\tcontinue;\t\t&#125;\t&#125;&#125;\n这里就是遍历判断参数是否可以由之前实例化时Adapter传入的解析器进行解析,support的实现就是遍历所有的解析器,判断其是否支持该参数类型(比如,是否有requestBody,pathVariable注解等),然后进行真正的参数解析这里以requestBody注解的解析器RequestResponseBodyMethodProcessor为例分析进入核心方法readWithMessageConverters12345678910111213for (HttpMessageConverter&lt;?&gt; converter : this.messageConverters) &#123;\tClass&lt;HttpMessageConverter&lt;?&gt;&gt; converterType = (Class&lt;HttpMessageConverter&lt;?&gt;&gt;) converter.getClass();\tGenericHttpMessageConverter&lt;?&gt; genericConverter =\t\t\t(converter instanceof GenericHttpMessageConverter ? (GenericHttpMessageConverter&lt;?&gt;) converter : null);\tif (genericConverter != null ? genericConverter.canRead(targetType, contextClass, contentType) :\t\t\t(targetClass != null &amp;&amp; converter.canRead(targetClass, contentType))) &#123;\t\tif (message.hasBody()) &#123;\t\t\tbody = (genericConverter != null ? genericConverter.read(targetType, contextClass, msgToUse) :((HttpMessageConverter&lt;T&gt;) converter).read(targetClass, msgToUse));\t\t\tbody = getAdvice().afterBodyRead(body, msgToUse, parameter, targetType, converterType);\t\t&#125;\t\tbreak;\t&#125;&#125;\n这里就是遍历converter通过canRead判断目标类型和contentType能否被converter解析(如果不能会报415),找到合适的converter后就可以调用read进行解析,这里以FastJsonHttpMessageConverter为例12345678910111213141516byte[] bytes = allocateBytes(1024 * 64);int offset = 0;for (;;) &#123;    int readCount = is.read(bytes, offset, bytes.length - offset);    if (readCount == -1) &#123;        break;    &#125;    offset += readCount;    if (offset == bytes.length) &#123;        byte[] newBytes = new byte[bytes.length * 3 / 2];        System.arraycopy(bytes, 0, newBytes, 0, bytes.length);        bytes = newBytes;    &#125;&#125;return (T) parseObject(bytes, 0, offset, charset, type, features);\n读取requestBody构建再序列化构建type的对象,从这里也可以看出在controller方法中默认情况下是无法写两个requestBody注解的参数的,如果想实现就只能写自己的converter,根据Json的key进行解析  \n至此,所有参数已经通过参数解析器解析完毕,接下来正常的反射方法调用了\n当拿到返回值后,同样会进行处理\n参考springmvc源码分析迷你书  ","dateCreated":"2018-07-16T19:28:20+08:00","dateModified":"2019-03-27T17:49:01+08:00","datePublished":"2018-07-16T19:28:20+08:00","description":"Spring源码","headline":"周报4 SpringMVC","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spring.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2018/07/16/周报4-SpringMVC/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2018/07/16/周报4-SpringMVC/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spring.png"}</script>
+    <meta name="description" content="Spring源码">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="周报4 SpringMVC">
+<meta property="og:url" content="http://yoursite.com/2018/07/16/周报4-SpringMVC/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Spring源码">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-03-27T09:49:01.185Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="周报4 SpringMVC">
+<meta name="twitter:description" content="Spring源码">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spring.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spring.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            周报4 SpringMVC
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2018-07-16T19:28:20+08:00">
+	
+		    7月 16, 2018
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt --> <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#SpringMVC"><span class="toc-text">SpringMVC</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#DispatchServlet的分发"><span class="toc-text">DispatchServlet的分发</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#url与Controller的映射"><span class="toc-text">url与Controller的映射</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#HandlerMethod类"><span class="toc-text">HandlerMethod类</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#RequestMappingInfo类"><span class="toc-text">RequestMappingInfo类</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#RequestMappingHandlerMapping类"><span class="toc-text">RequestMappingHandlerMapping类</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#回看doDispatch"><span class="toc-text">回看doDispatch()</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#方法调用"><span class="toc-text">方法调用</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#参数解析"><span class="toc-text">参数解析</span></a></li></ol></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="SpringMVC"><a href="#SpringMVC" class="headerlink" title="SpringMVC"></a>SpringMVC</h1><h2 id="DispatchServlet的分发"><a href="#DispatchServlet的分发" class="headerlink" title="DispatchServlet的分发"></a>DispatchServlet的分发</h2><p>所有的请求都会到达DispatchServlet，他重写了doService()方法  </p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">try</span> &#123;  </span><br><span class="line"></span><br><span class="line">	doDispatch(request, response);  </span><br><span class="line"></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>doDispatch主要的功能就是根据根据url找到对应的method和interceptor，组合构成一个HandlerExecutionChain。  </p>
+<h2 id="url与Controller的映射"><a href="#url与Controller的映射" class="headerlink" title="url与Controller的映射"></a>url与Controller的映射</h2><h3 id="HandlerMethod类"><a href="#HandlerMethod类" class="headerlink" title="HandlerMethod类"></a>HandlerMethod类</h3><p>SpringMVC使用HandlerMethod类对应一个个的url，其封装了方法参数，注解，返回值等信息，他的子类InvocableHandlerMethod的子类ServletInvocableHandlerMethod用于对应一个个的请求，每当有一个新的请求时，就会实例化一个ServletInvocableHandlerMethod。  </p>
+<h3 id="RequestMappingInfo类"><a href="#RequestMappingInfo类" class="headerlink" title="RequestMappingInfo类"></a>RequestMappingInfo类</h3><p>RequestMappingInfo类封装了url，请求方法，请求条件等信息的一个类，对应一个个的url。  </p>
+<h3 id="RequestMappingHandlerMapping类"><a href="#RequestMappingHandlerMapping类" class="headerlink" title="RequestMappingHandlerMapping类"></a>RequestMappingHandlerMapping类</h3><p>该类用于处理请求与Method的映射，其父类AbstractHandlerMethodMapping实现了InitializingBean接口,所以当他被实例化后,会调用他的afterPropertiesSet方法,这里会扫描所有的beanName,然后遍历判断每个bean是否是Controller(Handler)<br>AbstractHandlerMethodMapping.initHandlerMethods()  </p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line">      String[] beanNames = (<span class="keyword">this</span>.detectHandlerMethodsInAncestorContexts ?</span><br><span class="line">		BeanFactoryUtils.beanNamesForTypeIncludingAncestors(obtainApplicationContext(), Object.class) :</span><br><span class="line">		obtainApplicationContext().getBeanNamesForType(Object.class));</span><br><span class="line"><span class="keyword">for</span> (String beanName : beanNames) &#123;</span><br><span class="line">	<span class="keyword">if</span> (!beanName.startsWith(SCOPED_TARGET_NAME_PREFIX)) &#123;</span><br><span class="line">		Class&lt;?&gt; beanType = <span class="keyword">null</span>;</span><br><span class="line">		<span class="keyword">try</span> &#123;</span><br><span class="line">			beanType = obtainApplicationContext().getType(beanName);</span><br><span class="line">		&#125;<span class="comment">//......</span></span><br><span class="line">		<span class="keyword">if</span> (beanType != <span class="keyword">null</span> &amp;&amp; isHandler(beanType)) &#123;如果是一个handler</span><br><span class="line">			detectHandlerMethods(beanName);</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line">handlerMethodsInitialized(getHandlerMethods());</span><br></pre></td></tr></table></figure>
+<p>AbstractHandlerMethodMapping.detectHandlerMethods(beanName)<br>如果bean是使用CGLib实例化的，userType为其bean的父类，否则userType=handlerType。getMappingForMethod()在其子类RequestMappingHandlerMapping中实现，主要功能是实例化RequestMappingInfo。  </p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line">Class&lt;?&gt; handlerType = (handler <span class="keyword">instanceof</span> String ?</span><br><span class="line">		obtainApplicationContext().getType((String) handler) : handler.getClass());</span><br><span class="line"></span><br><span class="line"><span class="keyword">if</span> (handlerType != <span class="keyword">null</span>) &#123;</span><br><span class="line">	<span class="keyword">final</span> Class&lt;?&gt; userType = ClassUtils.getUserClass(handlerType);</span><br><span class="line">	Map&lt;Method, T&gt; methods = MethodIntrospector.selectMethods(userType,</span><br><span class="line">			(MethodIntrospector.MetadataLookup&lt;T&gt;) method -&gt; &#123;</span><br><span class="line">				<span class="keyword">try</span> &#123;</span><br><span class="line">					<span class="keyword">return</span> getMappingForMethod(method, userType);</span><br><span class="line">				&#125;</span><br><span class="line">				<span class="keyword">catch</span> (Throwable ex) &#123;</span><br><span class="line">					<span class="keyword">throw</span> <span class="keyword">new</span> IllegalStateException(<span class="string">"Invalid mapping on handler class ["</span> +</span><br><span class="line">							userType.getName() + <span class="string">"]: "</span> + method, ex);</span><br><span class="line">				&#125;</span><br><span class="line">			&#125;);</span><br><span class="line">	</span><br><span class="line">	methods.forEach((method, mapping) -&gt; &#123;</span><br><span class="line">		Method invocableMethod = AopUtils.selectInvocableMethod(method, userType);</span><br><span class="line">		registerHandlerMethod(handler, invocableMethod, mapping);</span><br><span class="line">	&#125;);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>RequestMappingHandlerMapping.getMappingForMethod()主要是找到Method和Controller类上的RequestMapping注解，并将两个值合并组成url。  </p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">RequestMappingInfo info = createRequestMappingInfo(method);  </span><br><span class="line"></span><br><span class="line"><span class="keyword">if</span> (info != <span class="keyword">null</span>) &#123;</span><br><span class="line">	RequestMappingInfo typeInfo = createRequestMappingInfo(handlerType);</span><br><span class="line">	<span class="keyword">if</span> (typeInfo != <span class="keyword">null</span>) &#123;</span><br><span class="line">		info = typeInfo.combine(info);</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">return</span> info;</span><br></pre></td></tr></table></figure>
+<p>registerHandlerMethod（）-&gt; AbstractHandlerMethodMapping.MappingRegistry.register()方法的主要功能是实例化HandlerMethod，并注册到map中。<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">HandlerMethod handlerMethod = createHandlerMethod(handler, method);</span><br><span class="line">assertUniqueMethodMapping(handlerMethod, mapping);</span><br><span class="line"></span><br><span class="line"></span><br><span class="line"><span class="keyword">this</span>.mappingLookup.put(mapping, handlerMethod);</span><br><span class="line"></span><br><span class="line">List&lt;String&gt; directUrls = getDirectUrls(mapping);</span><br><span class="line"><span class="keyword">for</span> (String url : directUrls) &#123;</span><br><span class="line">	<span class="keyword">this</span>.urlLookup.add(url, mapping);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>需要注意的是,在HandlerMethod类中,有一个Bean字段,本意是controller,但是在这里的实例化中,这个handler是String,需要在后面进行判断并调用getBean。<br>至此RequestMappingHandlerMapping中有两个重要map：<br>mappingLookup，key为RequestMappingInfo，value为HandlerMethod。<br>urlLookup，key为String(url),value为RequestMappingInfo。  </p>
+<h2 id="回看doDispatch"><a href="#回看doDispatch" class="headerlink" title="回看doDispatch()"></a>回看doDispatch()</h2><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">mappedHandler = getHandler(processedRequest);</span><br></pre></td></tr></table></figure>
+<p>该方法会一路调用到AbstractHandlerMethodMapping.lookupHandlerMethod(),首先根据url找到requestMappingInfo实例，addMatchingMappings()中会根据requestMappingInfo找到handlerMethod，并添加到matches中，最后通过RequestMappingInfo的compareTo方法找到优先级最高的Match<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line">List&lt;Match&gt; matches = <span class="keyword">new</span> ArrayList&lt;&gt;();</span><br><span class="line">List&lt;T&gt; directPathMatches = <span class="keyword">this</span>.mappingRegistry.getMappingsByUrl(lookupPath);</span><br><span class="line"><span class="keyword">if</span> (directPathMatches != <span class="keyword">null</span>) &#123;</span><br><span class="line">	addMatchingMappings(directPathMatches, matches, request);</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">if</span> (matches.isEmpty()) &#123;</span><br><span class="line">	<span class="comment">// No choice but to go through all mappings...</span></span><br><span class="line">	addMatchingMappings(<span class="keyword">this</span>.mappingRegistry.getMappings().keySet(), matches, request);</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">if</span> (!matches.isEmpty()) &#123;</span><br><span class="line">	Comparator&lt;Match&gt; comparator = <span class="keyword">new</span> MatchComparator(getMappingComparator(request));</span><br><span class="line">	matches.sort(comparator);</span><br><span class="line">	Match bestMatch = matches.get(<span class="number">0</span>);</span><br><span class="line">	<span class="keyword">if</span> (matches.size() &gt; <span class="number">1</span>) &#123;</span><br><span class="line">		<span class="keyword">if</span> (CorsUtils.isPreFlightRequest(request)) &#123;</span><br><span class="line">			<span class="keyword">return</span> PREFLIGHT_AMBIGUOUS_MATCH;</span><br><span class="line">		&#125;</span><br><span class="line">		Match secondBestMatch = matches.get(<span class="number">1</span>);</span><br><span class="line">		<span class="comment">//.......</span></span><br><span class="line">	&#125;</span><br><span class="line">	handleMatch(bestMatch.mapping, lookupPath, request);</span><br><span class="line">	<span class="keyword">return</span> bestMatch.handlerMethod;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>现在已经拿到了匹配度最高的HandlerMethod,接下来会执行<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">return</span> (handlerMethod != <span class="keyword">null</span> ? handlerMethod.createWithResolvedBean() : <span class="keyword">null</span>);</span><br></pre></td></tr></table></figure></p>
+<p>这里会判断handlerMethod的bean instanceof string,是的话会getBean获取controller<br>接下来就是调用AbstractHandlerMapping.getHandlerExecutionChain()方法，根据已有的Handler和配置的Interceptor组成HandlerExecutionChain。    </p>
+<h3 id="方法调用"><a href="#方法调用" class="headerlink" title="方法调用"></a>方法调用</h3><p>doDispatch方法会根据返回的chain的handler查找匹配的Adapter,再调用Adapter的handle方法,一路走到invokeHandlerMethod方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">ServletInvocableHandlerMethod invocableMethod = createInvocableHandlerMethod(handlerMethod);</span><br><span class="line"><span class="keyword">if</span> (<span class="keyword">this</span>.argumentResolvers != <span class="keyword">null</span>) &#123;</span><br><span class="line">	invocableMethod.setHandlerMethodArgumentResolvers(<span class="keyword">this</span>.argumentResolvers);</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">if</span> (<span class="keyword">this</span>.returnValueHandlers != <span class="keyword">null</span>) &#123;</span><br><span class="line">	invocableMethod.setHandlerMethodReturnValueHandlers(<span class="keyword">this</span>.returnValueHandlers);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>首先创建真正要处理请求的ServletInvocableHandlerMathod实例,然后将Adapter的参数解析器都设置到其中,接下来的主要逻辑就转到ServletInvocableHandlerMathod的invokeForRequest中了,主要逻辑就是参数解析以及反射方法调用<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">Object[] args = getMethodArgumentValues(request, mavContainer, providedArgs);</span><br><span class="line">Object returnValue = doInvoke(args);</span><br></pre></td></tr></table></figure></p>
+<h4 id="参数解析"><a href="#参数解析" class="headerlink" title="参数解析"></a>参数解析</h4><p>先关注参数解析的主要逻辑<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; parameters.length; i++) &#123;</span><br><span class="line">	MethodParameter parameter = parameters[i];</span><br><span class="line">	<span class="keyword">if</span> (<span class="keyword">this</span>.argumentResolvers.supportsParameter(parameter)) &#123;</span><br><span class="line">		<span class="keyword">try</span> &#123;</span><br><span class="line">			args[i] = <span class="keyword">this</span>.argumentResolvers.resolveArgument(</span><br><span class="line">					parameter, mavContainer, request, <span class="keyword">this</span>.dataBinderFactory);</span><br><span class="line">			<span class="keyword">continue</span>;</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>这里就是遍历判断参数是否可以由之前实例化时Adapter传入的解析器进行解析,support的实现就是遍历所有的解析器,判断其是否支持该参数类型(比如,是否有requestBody,pathVariable注解等),然后进行真正的参数解析<br>这里以requestBody注解的解析器RequestResponseBodyMethodProcessor为例分析<br>进入核心方法readWithMessageConverters<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">for</span> (HttpMessageConverter&lt;?&gt; converter : <span class="keyword">this</span>.messageConverters) &#123;</span><br><span class="line">	Class&lt;HttpMessageConverter&lt;?&gt;&gt; converterType = (Class&lt;HttpMessageConverter&lt;?&gt;&gt;) converter.getClass();</span><br><span class="line">	GenericHttpMessageConverter&lt;?&gt; genericConverter =</span><br><span class="line">			(converter <span class="keyword">instanceof</span> GenericHttpMessageConverter ? (GenericHttpMessageConverter&lt;?&gt;) converter : <span class="keyword">null</span>);</span><br><span class="line">	<span class="keyword">if</span> (genericConverter != <span class="keyword">null</span> ? genericConverter.canRead(targetType, contextClass, contentType) :</span><br><span class="line">			(targetClass != <span class="keyword">null</span> &amp;&amp; converter.canRead(targetClass, contentType))) &#123;</span><br><span class="line">		<span class="keyword">if</span> (message.hasBody()) &#123;</span><br><span class="line">			body = (genericConverter != <span class="keyword">null</span> ? genericConverter.read(targetType, contextClass, msgToUse) :((HttpMessageConverter&lt;T&gt;) converter).read(targetClass, msgToUse));</span><br><span class="line">			body = getAdvice().afterBodyRead(body, msgToUse, parameter, targetType, converterType);</span><br><span class="line">		&#125;</span><br><span class="line">		<span class="keyword">break</span>;</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>这里就是遍历converter通过canRead判断目标类型和contentType能否被converter解析(如果不能会报415),找到合适的converter后就可以调用read进行解析,这里以FastJsonHttpMessageConverter为例<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">byte</span>[] bytes = allocateBytes(<span class="number">1024</span> * <span class="number">64</span>);</span><br><span class="line"><span class="keyword">int</span> offset = <span class="number">0</span>;</span><br><span class="line"><span class="keyword">for</span> (;;) &#123;</span><br><span class="line">    <span class="keyword">int</span> readCount = is.read(bytes, offset, bytes.length - offset);</span><br><span class="line">    <span class="keyword">if</span> (readCount == -<span class="number">1</span>) &#123;</span><br><span class="line">        <span class="keyword">break</span>;</span><br><span class="line">    &#125;</span><br><span class="line">    offset += readCount;</span><br><span class="line">    <span class="keyword">if</span> (offset == bytes.length) &#123;</span><br><span class="line">        <span class="keyword">byte</span>[] newBytes = <span class="keyword">new</span> <span class="keyword">byte</span>[bytes.length * <span class="number">3</span> / <span class="number">2</span>];</span><br><span class="line">        System.arraycopy(bytes, <span class="number">0</span>, newBytes, <span class="number">0</span>, bytes.length);</span><br><span class="line">        bytes = newBytes;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">return</span> (T) parseObject(bytes, <span class="number">0</span>, offset, charset, type, features);</span><br></pre></td></tr></table></figure></p>
+<p>读取requestBody构建再序列化构建type的对象,从这里也可以看出在controller方法中默认情况下是无法写两个requestBody注解的参数的,如果想实现就只能写自己的converter,根据Json的key进行解析  </p>
+<p>至此,所有参数已经通过参数解析器解析完毕,接下来正常的反射方法调用了</p>
+<p>当拿到返回值后,同样会进行处理</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://www.kancloud.cn/ahutchen/springmvc-source-minibook/333544" target="_blank" rel="noopener">springmvc源码分析迷你书</a>  </p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring-IOC/" data-tooltip="周报4 Spring IOC/AOP/事务" aria-label="上一篇: 周报4 Spring IOC/AOP/事务">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/30/周报3JVM/" data-tooltip="周报3 JVM" aria-label="下一篇: 周报3 JVM">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/07/16/周报4-Spring-IOC/" data-tooltip="周报4 Spring IOC/AOP/事务" aria-label="上一篇: 周报4 Spring IOC/AOP/事务">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2018/05/30/周报3JVM/" data-tooltip="周报3 JVM" aria-label="下一篇: 周报3 JVM">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
