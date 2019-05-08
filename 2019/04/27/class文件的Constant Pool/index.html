@@ -6,26 +6,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="generator" content="一条咸鱼">
-    <title>类加载 - 一条咸鱼</title>
+    <title>Constant Pool - 一条咸鱼</title>
     <meta name="author" content="一条咸鱼">
     
     
         <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
     
     
-    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\n起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &#123;  public  static void test()&#123;      &#125;  public void testInstance()&#123;    System.out.println(\"instance\");  &#125;&#125;\n对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool为什么没有test和testInstance方法的Methodref?constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref那么为什么Java需要constant pool这个东西呢？\nC的链接链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址\n符号解析在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  \n重定位接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  \nJava由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。\n参考深入理解计算机系统","dateCreated":"2019-04-27T16:05:42+08:00","dateModified":"2019-05-08T15:52:02+08:00","datePublished":"2019-04-27T16:05:42+08:00","description":"Constant Pool","headline":"类加载","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/04/27/class文件的Constant Pool/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/04/27/class文件的Constant Pool/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
-    <meta name="description" content="Constant Pool">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\n起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &#123;  public  static void test()&#123;      &#125;  public void testInstance()&#123;    System.out.println(\"instance\");  &#125;&#125;\n对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool为什么没有test和testInstance方法的Methodref?constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref那么为什么Java需要constant pool这个东西呢？\nC的链接链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址\n符号解析在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  \n重定位接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  \nJava由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。\n参考深入理解计算机系统","dateCreated":"2019-04-27T15:41:37+08:00","dateModified":"2019-05-08T15:55:02+08:00","datePublished":"2019-04-27T15:41:37+08:00","description":"Java多线程(二):锁/Synchronized/volatile/单例","headline":"Constant Pool","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/04/27/class文件的Constant Pool/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/04/27/class文件的Constant Pool/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="Java多线程(二):锁/Synchronized/volatile/单例">
 <meta property="og:type" content="blog">
-<meta property="og:title" content="类加载">
+<meta property="og:title" content="Constant Pool">
 <meta property="og:url" content="http://yoursite.com/2019/04/27/class文件的Constant Pool/index.html">
 <meta property="og:site_name" content="一条咸鱼">
-<meta property="og:description" content="Constant Pool">
+<meta property="og:description" content="Java多线程(二):锁/Synchronized/volatile/单例">
 <meta property="og:locale" content="zh-cn">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png">
-<meta property="og:updated_time" content="2019-05-08T07:52:02.015Z">
+<meta property="og:updated_time" content="2019-05-08T07:55:02.021Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="类加载">
-<meta name="twitter:description" content="Constant Pool">
+<meta name="twitter:title" content="Constant Pool">
+<meta name="twitter:description" content="Java多线程(二):锁/Synchronized/volatile/单例">
 <meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png">
 <meta property="fb:app_id" content="[object Object]">
     
@@ -143,12 +143,12 @@
                 <div class="post-header main-content-wrap text-center">
     
         <h1 class="post-title">
-            类加载
+            Constant Pool
         </h1>
     
     
         <div class="post-meta">
-    <time datetime="2019-04-27T16:05:42+08:00">
+    <time datetime="2019-04-27T15:41:37+08:00">
 	
 		    4月 27, 2019
     	
@@ -212,7 +212,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
@@ -273,7 +273,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
