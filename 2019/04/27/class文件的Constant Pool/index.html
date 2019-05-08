@@ -13,19 +13,19 @@
         <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
     
     
-    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &#123;  public  static void test()&#123;      &#125;  public void testInstance()&#123;    System.out.println(\"instance\");  &#125;&#125;\n对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool为什么没有test和testInstance方法的Methodref?constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref那么为什么Java需要constant pool这个东西呢？\nC的链接链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址\n符号解析在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  \n重定位接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  \nJava由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。\n参考深入理解计算机系统\n","dateCreated":"2019-04-27T16:05:42+08:00","dateModified":"2019-04-27T21:25:20+08:00","datePublished":"2019-04-27T16:05:42+08:00","description":"","headline":"类加载","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/04/27/class文件的Constant Pool/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/04/27/class文件的Constant Pool/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
-    <meta name="description" content="起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &amp;#123;  public  static void test()&amp;#123;      &amp;#125;  public void testInstance()&amp;#123;    System.out.println(&quot;instance&quot;);  &amp;#125;&amp;#125; 对于这样的J">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\n起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &#123;  public  static void test()&#123;      &#125;  public void testInstance()&#123;    System.out.println(\"instance\");  &#125;&#125;\n对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool为什么没有test和testInstance方法的Methodref?constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref那么为什么Java需要constant pool这个东西呢？\nC的链接链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址\n符号解析在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  \n重定位接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  \nJava由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。\n参考深入理解计算机系统","dateCreated":"2019-04-27T16:05:42+08:00","dateModified":"2019-05-08T15:52:02+08:00","datePublished":"2019-04-27T16:05:42+08:00","description":"Constant Pool","headline":"类加载","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/04/27/class文件的Constant Pool/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/04/27/class文件的Constant Pool/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="Constant Pool">
 <meta property="og:type" content="blog">
 <meta property="og:title" content="类加载">
 <meta property="og:url" content="http://yoursite.com/2019/04/27/class文件的Constant Pool/index.html">
 <meta property="og:site_name" content="一条咸鱼">
-<meta property="og:description" content="起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &amp;#123;  public  static void test()&amp;#123;      &amp;#125;  public void testInstance()&amp;#123;    System.out.println(&quot;instance&quot;);  &amp;#125;&amp;#125; 对于这样的J">
+<meta property="og:description" content="Constant Pool">
 <meta property="og:locale" content="zh-cn">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png">
-<meta property="og:updated_time" content="2019-04-27T13:25:20.072Z">
+<meta property="og:updated_time" content="2019-05-08T07:52:02.015Z">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="类加载">
-<meta name="twitter:description" content="起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &amp;#123;  public  static void test()&amp;#123;      &amp;#125;  public void testInstance()&amp;#123;    System.out.println(&quot;instance&quot;);  &amp;#125;&amp;#125; 对于这样的J">
+<meta name="twitter:description" content="Constant Pool">
 <meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png">
 <meta property="fb:app_id" content="[object Object]">
     
@@ -172,14 +172,15 @@
     
     <div class="post-content markdown">
         <div class="main-content-wrap">
-            <h1 id="起源"><a href="#起源" class="headerlink" title="起源"></a>起源</h1><p>关于这个问题的思考是有一天,同学跟我讨论一个问题<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">TestMethod</span> </span>&#123;</span><br><span class="line">  <span class="function"><span class="keyword">public</span>  <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">test</span><span class="params">()</span></span>&#123;</span><br><span class="line">    </span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">testInstance</span><span class="params">()</span></span>&#123;</span><br><span class="line">    System.out.println(<span class="string">"instance"</span>);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#起源"><span class="toc-text">起源</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#C的链接"><span class="toc-text">C的链接</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#符号解析"><span class="toc-text">符号解析</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#重定位"><span class="toc-text">重定位</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#Java"><span class="toc-text">Java</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="起源"><a href="#起源" class="headerlink" title="起源"></a>起源</h1><p>关于这个问题的思考是有一天,同学跟我讨论一个问题<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">TestMethod</span> </span>&#123;</span><br><span class="line">  <span class="function"><span class="keyword">public</span>  <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">test</span><span class="params">()</span></span>&#123;</span><br><span class="line">    </span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">testInstance</span><span class="params">()</span></span>&#123;</span><br><span class="line">    System.out.println(<span class="string">"instance"</span>);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
 <p>对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png" alt><br>为什么没有test和testInstance方法的Methodref?<br>constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref<br>那么为什么Java需要constant pool这个东西呢？</p>
 <h1 id="C的链接"><a href="#C的链接" class="headerlink" title="C的链接"></a>C的链接</h1><p>链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程<br>经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。<br>符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。<br>当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址</p>
 <h2 id="符号解析"><a href="#符号解析" class="headerlink" title="符号解析"></a>符号解析</h2><p>在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  </p>
 <h2 id="重定位"><a href="#重定位" class="headerlink" title="重定位"></a>重定位</h2><p>接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  </p>
 <h1 id="Java"><a href="#Java" class="headerlink" title="Java"></a>Java</h1><p>由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。</p>
 <h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="[https://book.douban.com/subject/26912767/](https://book.douban.com/subject/26912767/">深入理解计算机系统</a></p>
-
             
 
         </div>
@@ -211,7 +212,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
@@ -221,7 +222,7 @@
         
         <li class="post-action">
             
-                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
             
                 <i class="fa fa-list" aria-hidden="true"></i>
             </a>
@@ -272,7 +273,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
@@ -282,7 +283,7 @@
         
         <li class="post-action">
             
-                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
             
                 <i class="fa fa-list" aria-hidden="true"></i>
             </a>
