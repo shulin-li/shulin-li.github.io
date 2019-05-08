@@ -1,0 +1,348 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>类加载 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &#123;  public  static void test()&#123;      &#125;  public void testInstance()&#123;    System.out.println(\"instance\");  &#125;&#125;\n对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool为什么没有test和testInstance方法的Methodref?constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref那么为什么Java需要constant pool这个东西呢？\nC的链接链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址\n符号解析在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  \n重定位接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  \nJava由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。\n参考深入理解计算机系统\n","dateCreated":"2019-04-27T16:05:42+08:00","dateModified":"2019-04-27T21:25:20+08:00","datePublished":"2019-04-27T16:05:42+08:00","description":"","headline":"类加载","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/04/27/class文件的Constant Pool/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/04/27/class文件的Constant Pool/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &amp;#123;  public  static void test()&amp;#123;      &amp;#125;  public void testInstance()&amp;#123;    System.out.println(&quot;instance&quot;);  &amp;#125;&amp;#125; 对于这样的J">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="类加载">
+<meta property="og:url" content="http://yoursite.com/2019/04/27/class文件的Constant Pool/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &amp;#123;  public  static void test()&amp;#123;      &amp;#125;  public void testInstance()&amp;#123;    System.out.println(&quot;instance&quot;);  &amp;#125;&amp;#125; 对于这样的J">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png">
+<meta property="og:updated_time" content="2019-04-27T13:25:20.072Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="类加载">
+<meta name="twitter:description" content="起源关于这个问题的思考是有一天,同学跟我讨论一个问题12345678public class TestMethod &amp;#123;  public  static void test()&amp;#123;      &amp;#125;  public void testInstance()&amp;#123;    System.out.println(&quot;instance&quot;);  &amp;#125;&amp;#125; 对于这样的J">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            类加载
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-04-27T16:05:42+08:00">
+	
+		    4月 27, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <h1 id="起源"><a href="#起源" class="headerlink" title="起源"></a>起源</h1><p>关于这个问题的思考是有一天,同学跟我讨论一个问题<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">TestMethod</span> </span>&#123;</span><br><span class="line">  <span class="function"><span class="keyword">public</span>  <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">test</span><span class="params">()</span></span>&#123;</span><br><span class="line">    </span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">testInstance</span><span class="params">()</span></span>&#123;</span><br><span class="line">    System.out.println(<span class="string">"instance"</span>);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png" alt><br>为什么没有test和testInstance方法的Methodref?<br>constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref<br>那么为什么Java需要constant pool这个东西呢？</p>
+<h1 id="C的链接"><a href="#C的链接" class="headerlink" title="C的链接"></a>C的链接</h1><p>链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程<br>经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。<br>符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。<br>当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址</p>
+<h2 id="符号解析"><a href="#符号解析" class="headerlink" title="符号解析"></a>符号解析</h2><p>在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  </p>
+<h2 id="重定位"><a href="#重定位" class="headerlink" title="重定位"></a>重定位</h2><p>接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  </p>
+<h1 id="Java"><a href="#Java" class="headerlink" title="Java"></a>Java</h1><p>由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="[https://book.douban.com/subject/26912767/](https://book.douban.com/subject/26912767/">深入理解计算机系统</a></p>
+
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/20/项目中的坑/" data-tooltip="项目的坑" aria-label="下一篇: 项目的坑">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/20/项目中的坑/" data-tooltip="项目的坑" aria-label="下一篇: 项目的坑">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>

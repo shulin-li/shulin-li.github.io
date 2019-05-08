@@ -140,15 +140,15 @@
             <div class="postShorten-header">
                 <h1 class="postShorten-title">
                     
-                        <a class="link-unstyled" href="/2019/04/24/Docker学习/">
-                            (无标题)
+                        <a class="link-unstyled" href="/2019/04/27/class文件的Constant Pool/">
+                            类加载
                         </a>
                     
                 </h1>
                 <div class="postShorten-meta">
-    <time datetime="2019-04-24T16:38:13+08:00">
+    <time datetime="2019-04-27T16:05:42+08:00">
 	
-		    4月 24, 2019
+		    4月 27, 2019
     	
     </time>
     
@@ -157,14 +157,21 @@
             </div>
             
                 <div class="postShorten-content">
-                    <h1 id="遇到的坑"><a href="#遇到的坑" class="headerlink" title="遇到的坑"></a>遇到的坑</h1><h2 id="易失的-etc-host"><a href="#易失的-etc-host" class="headerlink" title="易失的/etc/host"></a>易失的/etc/host</h2>
+                    <h1 id="起源"><a href="#起源" class="headerlink" title="起源"></a>起源</h1><p>关于这个问题的思考是有一天,同学跟我讨论一个问题<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">TestMethod</span> </span>&#123;</span><br><span class="line">  <span class="function"><span class="keyword">public</span>  <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">test</span><span class="params">()</span></span>&#123;</span><br><span class="line">    </span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">testInstance</span><span class="params">()</span></span>&#123;</span><br><span class="line">    System.out.println(<span class="string">"instance"</span>);</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>对于这样的Java代码,在编译为class后,通过javap反编译观察constant pool<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/jvm/constantpool.png" alt><br>为什么没有test和testInstance方法的Methodref?<br>constant pool是用来存储当前类中使用到的各种,Methodref就是当前类中被引用到的方法,而test和testInstance方法在当前类中都没有显式调用,自然不会有相应的Methodref<br>那么为什么Java需要constant pool这个东西呢？</p>
+<h1 id="C的链接"><a href="#C的链接" class="headerlink" title="C的链接"></a>C的链接</h1><p>链接是将代码段数据段合并为一个单一可执行文件的过程,主要包含符号解析以及重定位的过程<br>经过编译器和汇编器生成ELF文件后,有三个特殊的节:.systab;.rel.text;.rel.data,非别存放:程序中定义和引用的函数以及全局变量的信息;代码段中位置的列表;被当前模块引用或定义的所有变量的重定位信息。<br>符号表是一个符号数组,每个符号结构都记录了符号名称,符号的地址,符号的类型(本模块内定义/未定义符号)。<br>当汇编器遇到最终位置为止的引用时,就会为其生成相应的重定位条目,代码的重定位条目在.rel.text节中,数据的重定位条目在.rel.data节中,最终由链接器修改这些条目使其指向真正的地址</p>
+<h2 id="符号解析"><a href="#符号解析" class="headerlink" title="符号解析"></a>符号解析</h2><p>在链接的过程中,链接器维护“可重定位目标文件集合”,“未解析的符号集合”,“已定义的符号集合”,通过对文件符号的不断解析,将未解析的符号绑定到对应的已定义的符号  </p>
+<h2 id="重定位"><a href="#重定位" class="headerlink" title="重定位"></a>重定位</h2><p>接下来链接器会合并节和定义并赋值内存地址,即所有的指令和变量都已经拥有了内存地址,接下来就是修改.rel.text和.rel.data中的重定位条目,使其指向正确的内存地址。  </p>
+<h1 id="Java"><a href="#Java" class="headerlink" title="Java"></a>Java</h1><p>由于Java编译完成后并不是直接的二进制文件,并且“动态加载类”等技术使Java的方法&amp;变量引用的内存地址完全无法确定,所以只能引入中间层,在运行时再解析。</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="[https://book.douban.com/subject/26912767/](https://book.douban.com/subject/26912767/">深入理解计算机系统</a></p>
+
                     
                         
 
                     
                     
                         <p>
-                            <a href="/2019/04/24/Docker学习/#post-footer" class="postShorten-excerpt_link link">
+                            <a href="/2019/04/27/class文件的Constant Pool/#post-footer" class="postShorten-excerpt_link link">
                                 评论和共享
                             </a>
                         </p>
@@ -172,6 +179,13 @@
                 </div>
             
         </div>
+        
+            <a href="/2019/04/27/class文件的Constant Pool/">
+                <div class="postShorten-thumbnailimg">
+                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
+                </div>
+            </a>
+            
         
     </article>
     
