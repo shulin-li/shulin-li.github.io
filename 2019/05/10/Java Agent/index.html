@@ -1,0 +1,371 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>Java Agent - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\nAttachAttach机制是JVM提供的一种用于JVM进程间通信的接口,比如当我们使用jstack并传入目标Java进程的PID时,jstack就会使用attach机制,attach到目标JVM上12345678private static void runThreadDump(String pid, String args[]) throws Exception &#123;    VirtualMachine vm = null;    try &#123;        vm = VirtualMachine.attach(pid);    &#125;     InputStream in = ((HotSpotVirtualMachine)vm).remoteDataDump((Object[])args);    vm.detach();&#125;\nattach内部实现基本就是根据传入的pid,找到其父进程的pid,然后向其所有子进程发送SIGQUIT信号,JVM中除了信号处理线程外所有线程都对此信号设置了信号屏蔽,当处理线程收到这个信号的时候,就会创建attachListener线程attachListener会在tmp目录下创建一个unix socket此时,attach过程结束接下来attachListener会accept监听这个套接字回到jstack的Java代码中,attach最终会返回一个VirtualMachine实例(依据平台而选择实现这里关注LinuxVirtualMachine),在实例化时会根据pid查找attachListener的套接字文件123456// Return the socket file for the given process.private String findSocketFile(int pid) &#123;    //可以看到unix socket的文件名称是固定格式的    File f = new File(tmpdir, \".java_pid\" + pid);    return f.getPath();&#125;\n接下来就是通过这个套接字与JVM进行交流,发送特定的操作123public InputStream remoteDataDump(Object ... args) throws IOException &#123;    return executeCommand(\"threaddump\", args);&#125;\nattachListener通过读取socket的数据并根据映射关系,调用相应的函数以响应操作请求。12345678910111213static AttachOperationFunctionInfo funcs[] = &#123;  &#123; \"agentProperties\",  get_agent_properties &#125;,  &#123; \"datadump\",         data_dump &#125;,  &#123; \"dumpheap\",         dump_heap &#125;,  &#123; \"load\",             JvmtiExport::load_agent_library &#125;,  &#123; \"properties\",       get_system_properties &#125;,  &#123; \"threaddump\",       thread_dump &#125;,  &#123; \"inspectheap\",      heap_inspection &#125;,  &#123; \"setflag\",          set_flag &#125;,  &#123; \"printflag\",        print_flag &#125;,  &#123; \"jcmd\",             jcmd &#125;,  &#123; NULL,               NULL &#125;&#125;;\nArthas以as.sh为入口简单分析理解javaagent的应用12345678910\"$&#123;java_command[@]&#125;\" \\    $&#123;ARTHAS_OPTS&#125; $&#123;JVM_OPTS&#125; \\    -jar \"$&#123;arthas_lib_dir&#125;/arthas-core.jar\" \\        -pid $&#123;TARGET_PID&#125; \\        -target-ip $&#123;TARGET_IP&#125; \\        -telnet-port $&#123;TELNET_PORT&#125; \\        -http-port $&#123;HTTP_PORT&#125; \\        -session-timeout $&#123;SESSION_TIMEOUT&#125; \\        -core \"$&#123;arthas_lib_dir&#125;/arthas-core.jar\" \\        -agent \"$&#123;arthas_lib_dir&#125;/arthas-agent.jar\"\n首先调用Arthas的main方法,首先会attach JVM,随后调用loadAgent12virtualMachine.loadAgent(arthasAgentPath,        configure.getArthasCore() + \";\" + configure.toString());\n通过shell脚本可以知道load的Agent就是arthas-agent.jar,会调用其agentmain方法123public static void agentmain(String args, Instrumentation inst) &#123;    main(args, inst);&#125;\nInstrumentation实例可以在premain或者agentmain方法中作为参数获得,他提供了一系列动态修改已加载类的方法(后面再说)main方法主要做的就是调用反射core.server.ArthasBootStrap#bind启动ShellServer解析用户输入的指令生成相应的任务并运行123456789101112public void bind(Configure configure) throws Throwable &#123;    try &#123;        ShellServerOptions options = new ShellServerOptions()                        .setInstrumentation(instrumentation)                        .setPid(pid)                        .setSessionTimeout(configure.getSessionTimeout() * 1000);        shellServer = new ShellServerImpl(options, this);        //这里初始化很多默认的Commond,如help,watch,trace        BuiltinCommandPack builtinCommands = new BuiltinCommandPack();        shellServer.listen(new BindHandler(isBindRef));    &#125;&#125;\n接下来关注一下instrumentation实例的传输路径,从ArthasBootStrap到ShellServerOptions,options又传入到ShellServerImpl在ShellServerImpl#listen中启动对应server监听客户端12345678public ShellServer listen(final Handler&lt;Future&lt;Void&gt;&gt; listenHandler) &#123;    Handler&lt;Future&lt;TermServer&gt;&gt; handler = new TermServerListenHandler(this, listenHandler, toStart);    for (TermServer termServer : toStart) &#123;        termServer.termHandler(new TermServerTermHandler(this));        termServer.listen(handler);    &#125;    return this;&#125;\n可以看到termServer是真正与用户终端交互的组件,其termHandler()和listen()两方法的参数都拥有ShellServerImpl的引用,也就能引用到instrumentation实例,termServer.listen我们关注TelnetTermServer的实现12345678910111213public TermServer listen(Handler&lt;Future&lt;TermServer&gt;&gt; listenHandler) &#123;    bootstrap = new NettyTelnetTtyBootstrap().setHost(hostIp).setPort(port);    try &#123;        bootstrap.start(new Consumer&lt;TtyConnection&gt;() &#123;            @Override            public void accept(final TtyConnection conn) &#123;                termHandler.handle(new TermImpl(Helper.loadKeymap(), conn));            &#125;        &#125;).get(connectionTimeout, TimeUnit.MILLISECONDS);        listenHandler.handle(Future.&lt;TermServer&gt;succeededFuture());    &#125;     return this;&#125;\naccept的连接都由termHandler(这个实例拥有ShellServerImpl引用)来处理最终进到ShellServerImpl的handleTerm方法,ShellServerImpl作为构造参数被封装为SessionClosedHandler并被ShellImpl.closedFuture引用12345public void handleTerm(Term term) &#123;    ShellImpl session = createShell(term);    session.closedFuture.setHandler(new SessionClosedHandler(this, session));    session.readline(); // Now readline&#125;\n调用session.readLine来解析用户输入的命令,ShellLineHandler又引用到了ShellImpl,他同样可以引用到instrumentation1234public void readline() &#123;    term.readline(Constants.DEFAULT_PROMPT, new ShellLineHandler(this),            new CommandManagerCompletionHandler(commandManager));&#125;\n接下来看ShellLineHandler的handle方法,具体是如何处理命令的1234567public void handle(String line) &#123;    List&lt;CliToken&gt; tokens = CliTokens.tokenize(line);    Job job = createJob(tokens);    if (job != null) &#123;        job.run();    &#125;&#125;\narthas将每一个命令都包装为一个Job并运行Job,先看一下createJob(实现在JobControllerImpl中)12345public Job createJob(InternalCommandManager commandManager, List&lt;CliToken&gt; tokens, ShellImpl shell) &#123;    Process process = createProcess(tokens, commandManager, jobId, shell.term());    JobImpl job = new JobImpl(jobId, this, process, line.toString(), runInBackground, shell);    return job;&#125;\nJob持有shell,也能找到instrumentation实例另外关注一下Process的实例化123private Process createCommandProcess(Command command, ListIterator&lt;CliToken&gt; tokens, int jobId, Term term) throws IOException &#123;    return new ProcessImpl(command, remaining, command.processHandler(), ProcessOutput);&#125;\ncommand是就是客户命令对应的Java类,这里以WatchCommand为例分析最终将process封装为Runnable并交给线程池处理123456789public synchronized void run(boolean fg) &#123;    process = new CommandProcessImpl(args2, tty, cl);    if (cacheLocation() != null) &#123;        process.echoTips(\"job id  : \" + this.jobId + \"\\n\");        process.echoTips(\"cache location  : \" + cacheLocation() + \"\\n\");    &#125;    Runnable task = new CommandProcessTask(process);    ArthasBootstrap.getInstance().execute(task);&#125;\n从CommandProcessTask跟进去,最终走到Enhancer类的enhance方法,也就是修改class的核心方法123456789101112131415161718192021222324252627282930313233343536373839public static synchronized EnhancerAffect enhance(final Instrumentation inst,final int adviceId,        final boolean isTracing,        final boolean skipJDKTrace,        final Matcher classNameMatcher,        final Matcher methodNameMatcher) throws UnmodifiableClassException &#123;    final EnhancerAffect affect = new EnhancerAffect();    // 获取需要增强的类集合    final Set&lt;Class&lt;?&gt;&gt; enhanceClassSet = GlobalOptions.isDisableSubClass            ? SearchUtils.searchClass(inst, classNameMatcher)            : SearchUtils.searchSubClass(inst, SearchUtils.searchClass(inst, classNameMatcher));    // 过滤掉无法被增强的类    filter(enhanceClassSet);    // 构建增强器    final Enhancer enhancer = new Enhancer(adviceId, isTracing, skipJDKTrace, enhanceClassSet, methodNameMatcher, affect);    try &#123;        (1)        inst.addTransformer(enhancer, true);        // 批量增强        if (GlobalOptions.isBatchReTransform) &#123;            final int size = enhanceClassSet.size();            final Class&lt;?&gt;[] classArray = new Class&lt;?&gt;[size];            arraycopy(enhanceClassSet.toArray(), 0, classArray, 0, size);            if (classArray.length &gt; 0) &#123;                (2)                inst.retransformClasses(classArray);            &#125;        &#125; else &#123;            for (Class&lt;?&gt; clazz : enhanceClassSet) &#123;                try &#123;                    (2)                    inst.retransformClasses(clazz);                &#125;             &#125;        &#125;    &#125; finally &#123;        inst.removeTransformer(enhancer);    &#125;    return affect;&#125;\n(1)处的代码是注册类的修改器,要求其实现ClassFileTransformer接口,最终调用TransformerManager#addTransformer方法12345public synchronized void addTransformer( ClassFileTransformer    transformer) &#123;    System.arraycopy(oldList,0,newList,0,oldList.length);    newList[oldList.length] = new TransformerInfo(transformer);    mTransformerList = newList;&#125;\n接下来就是(2)处的代码,也就是重新加载指定的类,在重新加载过程中之前注册的修改器就能得到执行,这个方法是一个native方法1private native void retransformClasses0(long nativeAgent, Class&lt;?&gt;[] classes);\n其底层实现在jvmTiEnv.cpp中12345678910111213141516171819JvmtiEnv::RetransformClasses(jint class_count, const jclass* classes) &#123;  for (index = 0; index &lt; class_count; index++) &#123;    jclass jcls = classes[index];    oop k_mirror = JNIHandles::resolve_external_guard(jcls);    Klass* k_oop = java_lang_Class::as_Klass(k_mirror);    KlassHandle klass(current_thread, k_oop);    instanceKlassHandle ikh(current_thread, k_oop);    if (ikh-&gt;get_cached_class_file_bytes() == NULL) &#123;      constantPoolHandle  constants(current_thread, ikh-&gt;constants());      MonitorLockerEx ml(constants-&gt;lock());    // lock constant pool while we query it      class_definitions[index].class_byte_count = (jint)reconstituter.class_file_size();      class_definitions[index].class_bytes      = (unsigned char*)                                                       reconstituter.class_file_bytes();    &#125;     class_definitions[index].klass              = jcls;  &#125;  VM_RedefineClasses op(class_count, class_definitions, jvmti_class_load_kind_retransform);  VMThread::execute(&amp;op);&#125;\n首先根据java.lang.class实例找到InstanceKlass实例,再找到其字节码并存入class_definitions数组中,有之前Java代码或者这里都可以看出来此处是支持批量替换的。当处理完所有的class后,调用execute,再调用VM_RedefineClasses的doit_prologue,再调用load_new_class_versions来重新加载类123456789101112131415jvmtiError VM_RedefineClasses::load_new_class_versions(TRAPS) &#123;  for (int i = 0; i &lt; _class_count; i++) &#123;    oop mirror = JNIHandles::resolve_non_null(_class_defs[i].klass);    Klass* the_class_oop = java_lang_Class::as_Klass(mirror);    instanceKlassHandle the_class = instanceKlassHandle(THREAD, the_class_oop);    Symbol*  the_class_sym = the_class-&gt;name();    (1)    ClassFileStream st((u1*) _class_defs[i].class_bytes,      _class_defs[i].class_byte_count, (char *)\"__VM_RedefineClasses__\");    Klass* k = SystemDictionary::parse_stream(the_class_sym,the_class_loader,protection_domain,                                                &amp;st,THREAD);  &#125;  return JVMTI_ERROR_NONE;&#125;\n首先根据之前解析得到的字节码,构建classFileStream(专门用来读class文件的类),然后parse_stream解析这个流(类得到了重加载),在该方法内会通过transformClassFile调用类修改器修改类(JPLISAgent.c)123transformedBufferObject = (*jnienv)-&gt;CallObjectMethod(jnienv,agent-&gt;mInstrumentationImpl,                agent-&gt;mTransform,loaderObject,classNameStringObject,classBeingRedefined,                protectionDomain,classFileBufferObject,is_retransformer);\n终于走到Java层面,通过Instrumentation调用transform,最终就是TransformerManager遍历类修改器调用transform方法也就是Enhancer#transform1234567891011121314151617181920212223242526272829303132public byte[] transform(final ClassLoader inClassLoader, String className, Class&lt;?&gt; classBeingRedefined,                ProtectionDomain protectionDomain, byte[] classfileBuffer) throws IllegalClassFormatException &#123;    try &#123;        // 这里要再次过滤一次，为啥？因为在transform的过程中，有可能还会再诞生新的类        // 所以需要将之前需要转换的类集合传递下来，再次进行判断        if (!matchingClasses.contains(classBeingRedefined)) &#123;            return null;        &#125;        final ClassReader cr;        // 首先先检查是否在缓存中存在Class字节码        // 因为要支持多人协作,存在多人同时增强的情况        final byte[] byteOfClassInCache = classBytesCache.get(classBeingRedefined);        // 字节码增强        final ClassWriter cw = new ClassWriter(cr, COMPUTE_FRAMES | COMPUTE_MAXS) &#123;        // 生成增强字节码        cr.accept(new AdviceWeaver(adviceId, isTracing, skipJDKTrace, cr.getClassName(), methodNameMatcher, affect,                        cw), EXPAND_FRAMES);        final byte[] enhanceClassByteArray = cw.toByteArray();        // 生成成功,推入缓存        classBytesCache.put(classBeingRedefined, enhanceClassByteArray);        // dump the class        dumpClassIfNecessary(className, enhanceClassByteArray, affect);        // 成功计数        affect.cCnt(1);        // 派遣间谍        try &#123;            spy(inClassLoader);        &#125;        return enhanceClassByteArray;    &#125;    return null;&#125;\n生成增强字节码一步中的AdviceWeaver中的visitMethod方法是核心,他返回AdviceAdapter实例,其onMethodEnter方法如下1234567891011121314151617protected void onMethodEnter() &#123;    codeLockForTracing.lock(new CodeLock.Block() &#123;        @Override        public void code() &#123;            // 加载before方法            loadAdviceMethod(KEY_ARTHAS_ADVICE_BEFORE_METHOD);            // 推入Method.invoke()的第一个参数            pushNull();            // 方法参数            loadArrayForBefore();            // 调用方法            invokeVirtual(ASM_TYPE_METHOD, ASM_METHOD_METHOD_INVOKE);            pop();        &#125;    &#125;);&#125;\n这里就是修改操作局部变量表,操作数栈来调用方法,分析loadAdviceMethod加载的methodOnBegin方法12345678910111213141516171819public static void methodOnBegin(int adviceId,ClassLoader loader, String className,         String methodName, String methodDesc,Object target, Object[] args) &#123;    try &#123;        // 构建执行帧栈,保护当前的执行现场        final GaStack&lt;Object&gt; frameStack = new ThreadUnsafeFixGaStack&lt;Object&gt;(FRAME_STACK_SIZE);        frameStack.push(loader);        frameStack.push(className);        frameStack.push(methodName);        frameStack.push(methodDesc);        frameStack.push(target);        frameStack.push(args);        final AdviceListener listener = getListener(adviceId);        frameStack.push(listener);        // 获取通知器并做前置通知        before(listener, loader, className, methodName, methodDesc, target, args);        // 保护当前执行帧栈,压入线程帧栈        threadFrameStackPush(frameStack);    &#125;&#125;\n最终调用watchAdviceListener#before方法开始进行信息获取1234567public void before(ClassLoader loader, Class&lt;?&gt; clazz, ArthasMethod method, Object target, Object[] args)throws Throwable &#123;    // 开始计算本次方法调用耗时    threadLocalWatch.start();    if (command.isBefore()) &#123;        watching(Advice.newForBefore(loader, clazz, method, target, args));    &#125;&#125;\n最后生成相应类,相应的方法已经被增强接下来回到JVM的load_new_class_versions方法中1res = merge_cp_and_rewrite(the_class, scratch_class, THREAD);\n这一步会进行常量池合并,更新属性等,也就是他只更新了指针指向内容,没有更新指针,所以重加载前的类的实例并不受影响\n参考JVM Attach机制实现Arthas源码分析JVM之类的热替换原理解读","dateCreated":"2019-05-10T23:23:11+08:00","dateModified":"2019-05-10T23:23:59+08:00","datePublished":"2019-05-10T23:23:11+08:00","description":"Java Agent","headline":"Java Agent","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/05/10/Java Agent/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/05/10/Java Agent/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="Java Agent">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="Java Agent">
+<meta property="og:url" content="http://yoursite.com/2019/05/10/Java Agent/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="Java Agent">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/javaAgent/attach.png">
+<meta property="og:updated_time" content="2019-05-10T15:23:59.167Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Java Agent">
+<meta name="twitter:description" content="Java Agent">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/javaAgent/attach.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Java Agent
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-05-10T23:23:11+08:00">
+	
+		    5月 10, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#Attach"><span class="toc-text">Attach</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#Arthas"><span class="toc-text">Arthas</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="Attach"><a href="#Attach" class="headerlink" title="Attach"></a>Attach</h1><p>Attach机制是JVM提供的一种用于JVM进程间通信的接口,比如当我们使用jstack并传入目标Java进程的PID时,jstack就会使用attach机制,attach到目标JVM上<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">runThreadDump</span><span class="params">(String pid, String args[])</span> <span class="keyword">throws</span> Exception </span>&#123;</span><br><span class="line">    VirtualMachine vm = <span class="keyword">null</span>;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        vm = VirtualMachine.attach(pid);</span><br><span class="line">    &#125; </span><br><span class="line">    InputStream in = ((HotSpotVirtualMachine)vm).remoteDataDump((Object[])args);</span><br><span class="line">    vm.detach();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>attach内部实现基本就是根据传入的pid,找到其父进程的pid,然后向其所有子进程发送SIGQUIT信号,JVM中除了信号处理线程外所有线程都对此信号设置了信号屏蔽,当处理线程收到这个信号的时候,就会创建attachListener线程<br>attachListener会在tmp目录下创建一个unix socket<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/javaAgent/attach.png" alt><br>此时,attach过程结束<br>接下来attachListener会accept监听这个套接字<br>回到jstack的Java代码中,attach最终会返回一个VirtualMachine实例(依据平台而选择实现这里关注LinuxVirtualMachine),在实例化时会根据pid查找attachListener的套接字文件<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// Return the socket file for the given process.</span></span><br><span class="line"><span class="function"><span class="keyword">private</span> String <span class="title">findSocketFile</span><span class="params">(<span class="keyword">int</span> pid)</span> </span>&#123;</span><br><span class="line">    <span class="comment">//可以看到unix socket的文件名称是固定格式的</span></span><br><span class="line">    File f = <span class="keyword">new</span> File(tmpdir, <span class="string">".java_pid"</span> + pid);</span><br><span class="line">    <span class="keyword">return</span> f.getPath();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>接下来就是通过这个套接字与JVM进行交流,发送特定的操作<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> InputStream <span class="title">remoteDataDump</span><span class="params">(Object ... args)</span> <span class="keyword">throws</span> IOException </span>&#123;</span><br><span class="line">    <span class="keyword">return</span> executeCommand(<span class="string">"threaddump"</span>, args);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>attachListener通过读取socket的数据并根据映射关系,调用相应的函数以响应操作请求。<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">static</span> AttachOperationFunctionInfo funcs[] = &#123;</span><br><span class="line">  &#123; <span class="string">"agentProperties"</span>,  get_agent_properties &#125;,</span><br><span class="line">  &#123; <span class="string">"datadump"</span>,         data_dump &#125;,</span><br><span class="line">  &#123; <span class="string">"dumpheap"</span>,         dump_heap &#125;,</span><br><span class="line">  &#123; <span class="string">"load"</span>,             JvmtiExport::load_agent_library &#125;,</span><br><span class="line">  &#123; <span class="string">"properties"</span>,       get_system_properties &#125;,</span><br><span class="line">  &#123; <span class="string">"threaddump"</span>,       thread_dump &#125;,</span><br><span class="line">  &#123; <span class="string">"inspectheap"</span>,      heap_inspection &#125;,</span><br><span class="line">  &#123; <span class="string">"setflag"</span>,          set_flag &#125;,</span><br><span class="line">  &#123; <span class="string">"printflag"</span>,        print_flag &#125;,</span><br><span class="line">  &#123; <span class="string">"jcmd"</span>,             jcmd &#125;,</span><br><span class="line">  &#123; <span class="literal">NULL</span>,               <span class="literal">NULL</span> &#125;</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure></p>
+<h1 id="Arthas"><a href="#Arthas" class="headerlink" title="Arthas"></a>Arthas</h1><p>以as.sh为入口简单分析理解javaagent的应用<br><figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">"$&#123;java_command[@]&#125;" \</span><br><span class="line">    $&#123;ARTHAS_OPTS&#125; $&#123;JVM_OPTS&#125; \</span><br><span class="line">    -jar "$&#123;arthas_lib_dir&#125;/arthas-core.jar" \</span><br><span class="line">        -pid $&#123;TARGET_PID&#125; \</span><br><span class="line">        -target-ip $&#123;TARGET_IP&#125; \</span><br><span class="line">        -telnet-port $&#123;TELNET_PORT&#125; \</span><br><span class="line">        -http-port $&#123;HTTP_PORT&#125; \</span><br><span class="line">        -session-timeout $&#123;SESSION_TIMEOUT&#125; \</span><br><span class="line">        -core "$&#123;arthas_lib_dir&#125;/arthas-core.jar" \</span><br><span class="line">        -agent "$&#123;arthas_lib_dir&#125;/arthas-agent.jar"</span><br></pre></td></tr></table></figure></p>
+<p>首先调用Arthas的main方法,首先会attach JVM,随后调用loadAgent<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">virtualMachine.loadAgent(arthasAgentPath,</span><br><span class="line">        configure.getArthasCore() + <span class="string">";"</span> + configure.toString());</span><br></pre></td></tr></table></figure></p>
+<p>通过shell脚本可以知道load的Agent就是arthas-agent.jar,会调用其agentmain方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">agentmain</span><span class="params">(String args, Instrumentation inst)</span> </span>&#123;</span><br><span class="line">    main(args, inst);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>Instrumentation实例可以在premain或者agentmain方法中作为参数获得,他提供了一系列动态修改已加载类的方法(后面再说)<br>main方法主要做的就是调用反射core.server.ArthasBootStrap#bind启动ShellServer解析用户输入的指令生成相应的任务并运行<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">bind</span><span class="params">(Configure configure)</span> <span class="keyword">throws</span> Throwable </span>&#123;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        ShellServerOptions options = <span class="keyword">new</span> ShellServerOptions()</span><br><span class="line">                        .setInstrumentation(instrumentation)</span><br><span class="line">                        .setPid(pid)</span><br><span class="line">                        .setSessionTimeout(configure.getSessionTimeout() * <span class="number">1000</span>);</span><br><span class="line">        shellServer = <span class="keyword">new</span> ShellServerImpl(options, <span class="keyword">this</span>);</span><br><span class="line">        <span class="comment">//这里初始化很多默认的Commond,如help,watch,trace</span></span><br><span class="line">        BuiltinCommandPack builtinCommands = <span class="keyword">new</span> BuiltinCommandPack();</span><br><span class="line">        shellServer.listen(<span class="keyword">new</span> BindHandler(isBindRef));</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>接下来关注一下instrumentation实例的传输路径,从ArthasBootStrap到ShellServerOptions,options又传入到ShellServerImpl<br>在ShellServerImpl#listen中启动对应server监听客户端<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> ShellServer <span class="title">listen</span><span class="params">(<span class="keyword">final</span> Handler&lt;Future&lt;Void&gt;&gt; listenHandler)</span> </span>&#123;</span><br><span class="line">    Handler&lt;Future&lt;TermServer&gt;&gt; handler = <span class="keyword">new</span> TermServerListenHandler(<span class="keyword">this</span>, listenHandler, toStart);</span><br><span class="line">    <span class="keyword">for</span> (TermServer termServer : toStart) &#123;</span><br><span class="line">        termServer.termHandler(<span class="keyword">new</span> TermServerTermHandler(<span class="keyword">this</span>));</span><br><span class="line">        termServer.listen(handler);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">this</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>可以看到termServer是真正与用户终端交互的组件,其termHandler()和listen()两方法的参数都拥有ShellServerImpl的引用,也就能引用到instrumentation实例,termServer.listen我们关注TelnetTermServer的实现<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> TermServer <span class="title">listen</span><span class="params">(Handler&lt;Future&lt;TermServer&gt;&gt; listenHandler)</span> </span>&#123;</span><br><span class="line">    bootstrap = <span class="keyword">new</span> NettyTelnetTtyBootstrap().setHost(hostIp).setPort(port);</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        bootstrap.start(<span class="keyword">new</span> Consumer&lt;TtyConnection&gt;() &#123;</span><br><span class="line">            <span class="meta">@Override</span></span><br><span class="line">            <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">accept</span><span class="params">(<span class="keyword">final</span> TtyConnection conn)</span> </span>&#123;</span><br><span class="line">                termHandler.handle(<span class="keyword">new</span> TermImpl(Helper.loadKeymap(), conn));</span><br><span class="line">            &#125;</span><br><span class="line">        &#125;).get(connectionTimeout, TimeUnit.MILLISECONDS);</span><br><span class="line">        listenHandler.handle(Future.&lt;TermServer&gt;succeededFuture());</span><br><span class="line">    &#125; </span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">this</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>accept的连接都由termHandler(这个实例拥有ShellServerImpl引用)来处理<br>最终进到ShellServerImpl的handleTerm方法,ShellServerImpl作为构造参数被封装为SessionClosedHandler并被ShellImpl.closedFuture引用<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">handleTerm</span><span class="params">(Term term)</span> </span>&#123;</span><br><span class="line">    ShellImpl session = createShell(term);</span><br><span class="line">    session.closedFuture.setHandler(<span class="keyword">new</span> SessionClosedHandler(<span class="keyword">this</span>, session));</span><br><span class="line">    session.readline(); <span class="comment">// Now readline</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>调用session.readLine来解析用户输入的命令,ShellLineHandler又引用到了ShellImpl,他同样可以引用到instrumentation<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">readline</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    term.readline(Constants.DEFAULT_PROMPT, <span class="keyword">new</span> ShellLineHandler(<span class="keyword">this</span>),</span><br><span class="line">            <span class="keyword">new</span> CommandManagerCompletionHandler(commandManager));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>接下来看ShellLineHandler的handle方法,具体是如何处理命令的<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">handle</span><span class="params">(String line)</span> </span>&#123;</span><br><span class="line">    List&lt;CliToken&gt; tokens = CliTokens.tokenize(line);</span><br><span class="line">    Job job = createJob(tokens);</span><br><span class="line">    <span class="keyword">if</span> (job != <span class="keyword">null</span>) &#123;</span><br><span class="line">        job.run();</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>arthas将每一个命令都包装为一个Job并运行Job,先看一下createJob(实现在JobControllerImpl中)<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> Job <span class="title">createJob</span><span class="params">(InternalCommandManager commandManager, List&lt;CliToken&gt; tokens, ShellImpl shell)</span> </span>&#123;</span><br><span class="line">    Process process = createProcess(tokens, commandManager, jobId, shell.term());</span><br><span class="line">    JobImpl job = <span class="keyword">new</span> JobImpl(jobId, <span class="keyword">this</span>, process, line.toString(), runInBackground, shell);</span><br><span class="line">    <span class="keyword">return</span> job;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>Job持有shell,也能找到instrumentation实例<br>另外关注一下Process的实例化<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> Process <span class="title">createCommandProcess</span><span class="params">(Command command, ListIterator&lt;CliToken&gt; tokens, <span class="keyword">int</span> jobId, Term term)</span> <span class="keyword">throws</span> IOException </span>&#123;</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">new</span> ProcessImpl(command, remaining, command.processHandler(), ProcessOutput);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>command是就是客户命令对应的Java类,这里以WatchCommand为例分析<br>最终将process封装为Runnable并交给线程池处理<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">synchronized</span> <span class="keyword">void</span> <span class="title">run</span><span class="params">(<span class="keyword">boolean</span> fg)</span> </span>&#123;</span><br><span class="line">    process = <span class="keyword">new</span> CommandProcessImpl(args2, tty, cl);</span><br><span class="line">    <span class="keyword">if</span> (cacheLocation() != <span class="keyword">null</span>) &#123;</span><br><span class="line">        process.echoTips(<span class="string">"job id  : "</span> + <span class="keyword">this</span>.jobId + <span class="string">"\n"</span>);</span><br><span class="line">        process.echoTips(<span class="string">"cache location  : "</span> + cacheLocation() + <span class="string">"\n"</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    Runnable task = <span class="keyword">new</span> CommandProcessTask(process);</span><br><span class="line">    ArthasBootstrap.getInstance().execute(task);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>从CommandProcessTask跟进去,最终走到Enhancer类的enhance方法,也就是修改class的核心方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">synchronized</span> EnhancerAffect <span class="title">enhance</span><span class="params">(<span class="keyword">final</span> Instrumentation inst,<span class="keyword">final</span> <span class="keyword">int</span> adviceId,</span></span></span><br><span class="line"><span class="function"><span class="params">        <span class="keyword">final</span> <span class="keyword">boolean</span> isTracing,</span></span></span><br><span class="line"><span class="function"><span class="params">        <span class="keyword">final</span> <span class="keyword">boolean</span> skipJDKTrace,</span></span></span><br><span class="line"><span class="function"><span class="params">        <span class="keyword">final</span> Matcher classNameMatcher,</span></span></span><br><span class="line"><span class="function"><span class="params">        <span class="keyword">final</span> Matcher methodNameMatcher)</span> <span class="keyword">throws</span> UnmodifiableClassException </span>&#123;</span><br><span class="line">    <span class="keyword">final</span> EnhancerAffect affect = <span class="keyword">new</span> EnhancerAffect();</span><br><span class="line">    <span class="comment">// 获取需要增强的类集合</span></span><br><span class="line">    <span class="keyword">final</span> Set&lt;Class&lt;?&gt;&gt; enhanceClassSet = GlobalOptions.isDisableSubClass</span><br><span class="line">            ? SearchUtils.searchClass(inst, classNameMatcher)</span><br><span class="line">            : SearchUtils.searchSubClass(inst, SearchUtils.searchClass(inst, classNameMatcher));</span><br><span class="line">    <span class="comment">// 过滤掉无法被增强的类</span></span><br><span class="line">    filter(enhanceClassSet);</span><br><span class="line">    <span class="comment">// 构建增强器</span></span><br><span class="line">    <span class="keyword">final</span> Enhancer enhancer = <span class="keyword">new</span> Enhancer(adviceId, isTracing, skipJDKTrace, enhanceClassSet, methodNameMatcher, affect);</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        (<span class="number">1</span>)</span><br><span class="line">        inst.addTransformer(enhancer, <span class="keyword">true</span>);</span><br><span class="line">        <span class="comment">// 批量增强</span></span><br><span class="line">        <span class="keyword">if</span> (GlobalOptions.isBatchReTransform) &#123;</span><br><span class="line">            <span class="keyword">final</span> <span class="keyword">int</span> size = enhanceClassSet.size();</span><br><span class="line">            <span class="keyword">final</span> Class&lt;?&gt;[] classArray = <span class="keyword">new</span> Class&lt;?&gt;[size];</span><br><span class="line">            arraycopy(enhanceClassSet.toArray(), <span class="number">0</span>, classArray, <span class="number">0</span>, size);</span><br><span class="line">            <span class="keyword">if</span> (classArray.length &gt; <span class="number">0</span>) &#123;</span><br><span class="line">                (<span class="number">2</span>)</span><br><span class="line">                inst.retransformClasses(classArray);</span><br><span class="line">            &#125;</span><br><span class="line">        &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">            <span class="keyword">for</span> (Class&lt;?&gt; clazz : enhanceClassSet) &#123;</span><br><span class="line">                <span class="keyword">try</span> &#123;</span><br><span class="line">                    (<span class="number">2</span>)</span><br><span class="line">                    inst.retransformClasses(clazz);</span><br><span class="line">                &#125; </span><br><span class="line">            &#125;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125; <span class="keyword">finally</span> &#123;</span><br><span class="line">        inst.removeTransformer(enhancer);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> affect;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>(1)处的代码是注册类的修改器,要求其实现ClassFileTransformer接口,最终调用TransformerManager#addTransformer方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">synchronized</span> <span class="keyword">void</span> <span class="title">addTransformer</span><span class="params">( ClassFileTransformer    transformer)</span> </span>&#123;</span><br><span class="line">    System.arraycopy(oldList,<span class="number">0</span>,newList,<span class="number">0</span>,oldList.length);</span><br><span class="line">    newList[oldList.length] = <span class="keyword">new</span> TransformerInfo(transformer);</span><br><span class="line">    mTransformerList = newList;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>接下来就是(2)处的代码,也就是重新加载指定的类,在重新加载过程中之前注册的修改器就能得到执行,这个方法是一个native方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">native</span> <span class="keyword">void</span> <span class="title">retransformClasses0</span><span class="params">(<span class="keyword">long</span> nativeAgent, Class&lt;?&gt;[] classes)</span></span>;</span><br></pre></td></tr></table></figure></p>
+<p>其底层实现在jvmTiEnv.cpp中<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line">JvmtiEnv::RetransformClasses(jint class_count, <span class="keyword">const</span> jclass* classes) &#123;</span><br><span class="line">  <span class="keyword">for</span> (index = <span class="number">0</span>; index &lt; class_count; index++) &#123;</span><br><span class="line">    jclass jcls = classes[index];</span><br><span class="line">    oop k_mirror = JNIHandles::resolve_external_guard(jcls);</span><br><span class="line">    Klass* k_oop = java_lang_Class::as_Klass(k_mirror);</span><br><span class="line">    <span class="function">KlassHandle <span class="title">klass</span><span class="params">(current_thread, k_oop)</span></span>;</span><br><span class="line">    <span class="function">instanceKlassHandle <span class="title">ikh</span><span class="params">(current_thread, k_oop)</span></span>;</span><br><span class="line">    <span class="keyword">if</span> (ikh-&gt;get_cached_class_file_bytes() == <span class="literal">NULL</span>) &#123;</span><br><span class="line">      <span class="function">constantPoolHandle  <span class="title">constants</span><span class="params">(current_thread, ikh-&gt;constants())</span></span>;</span><br><span class="line">      <span class="function">MonitorLockerEx <span class="title">ml</span><span class="params">(constants-&gt;lock())</span></span>;    <span class="comment">// lock constant pool while we query it</span></span><br><span class="line">      class_definitions[index].class_byte_count = (jint)reconstituter.class_file_size();</span><br><span class="line">      class_definitions[index].class_bytes      = (<span class="keyword">unsigned</span> <span class="keyword">char</span>*)</span><br><span class="line">                                                       reconstituter.class_file_bytes();</span><br><span class="line">    &#125; </span><br><span class="line">    class_definitions[index].klass              = jcls;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="function">VM_RedefineClasses <span class="title">op</span><span class="params">(class_count, class_definitions, jvmti_class_load_kind_retransform)</span></span>;</span><br><span class="line">  VMThread::execute(&amp;op);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>首先根据java.lang.class实例找到InstanceKlass实例,再找到其字节码并存入class_definitions数组中,有之前Java代码或者这里都可以看出来此处是支持批量替换的。<br>当处理完所有的class后,调用execute,再调用VM_RedefineClasses的doit_prologue,再调用load_new_class_versions来重新加载类<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line">jvmtiError VM_RedefineClasses::load_new_class_versions(TRAPS) &#123;</span><br><span class="line">  <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; _class_count; i++) &#123;</span><br><span class="line">    oop mirror = JNIHandles::resolve_non_null(_class_defs[i].klass);</span><br><span class="line">    Klass* the_class_oop = java_lang_Class::as_Klass(mirror);</span><br><span class="line">    instanceKlassHandle the_class = instanceKlassHandle(THREAD, the_class_oop);</span><br><span class="line">    Symbol*  the_class_sym = the_class-&gt;name();</span><br><span class="line">    (<span class="number">1</span>)</span><br><span class="line">    <span class="function">ClassFileStream <span class="title">st</span><span class="params">((u1*) _class_defs[i].class_bytes,</span></span></span><br><span class="line"><span class="function"><span class="params">      _class_defs[i].class_byte_count, (<span class="keyword">char</span> *)<span class="string">"__VM_RedefineClasses__"</span>)</span></span>;</span><br><span class="line"></span><br><span class="line">    Klass* k = SystemDictionary::parse_stream(the_class_sym,the_class_loader,protection_domain,</span><br><span class="line">                                                &amp;st,THREAD);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> JVMTI_ERROR_NONE;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>首先根据之前解析得到的字节码,构建classFileStream(专门用来读class文件的类),然后parse_stream解析这个流(类得到了重加载),在该方法内会通过transformClassFile调用类修改器修改类(JPLISAgent.c)<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">transformedBufferObject = (*jnienv)-&gt;CallObjectMethod(jnienv,agent-&gt;mInstrumentationImpl,</span><br><span class="line">                agent-&gt;mTransform,loaderObject,classNameStringObject,classBeingRedefined,</span><br><span class="line">                protectionDomain,classFileBufferObject,is_retransformer);</span><br></pre></td></tr></table></figure></p>
+<p>终于走到Java层面,通过Instrumentation调用transform,最终就是TransformerManager遍历类修改器调用transform方法<br>也就是Enhancer#transform<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="keyword">byte</span>[] transform(<span class="keyword">final</span> ClassLoader inClassLoader, String className, Class&lt;?&gt; classBeingRedefined,</span><br><span class="line">                ProtectionDomain protectionDomain, <span class="keyword">byte</span>[] classfileBuffer) <span class="keyword">throws</span> IllegalClassFormatException &#123;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        <span class="comment">// 这里要再次过滤一次，为啥？因为在transform的过程中，有可能还会再诞生新的类</span></span><br><span class="line">        <span class="comment">// 所以需要将之前需要转换的类集合传递下来，再次进行判断</span></span><br><span class="line">        <span class="keyword">if</span> (!matchingClasses.contains(classBeingRedefined)) &#123;</span><br><span class="line">            <span class="keyword">return</span> <span class="keyword">null</span>;</span><br><span class="line">        &#125;</span><br><span class="line">        <span class="keyword">final</span> ClassReader cr;</span><br><span class="line">        <span class="comment">// 首先先检查是否在缓存中存在Class字节码</span></span><br><span class="line">        <span class="comment">// 因为要支持多人协作,存在多人同时增强的情况</span></span><br><span class="line">        <span class="keyword">final</span> <span class="keyword">byte</span>[] byteOfClassInCache = classBytesCache.get(classBeingRedefined);</span><br><span class="line">        <span class="comment">// 字节码增强</span></span><br><span class="line">        <span class="keyword">final</span> ClassWriter cw = <span class="keyword">new</span> ClassWriter(cr, COMPUTE_FRAMES | COMPUTE_MAXS) &#123;</span><br><span class="line">        <span class="comment">// 生成增强字节码</span></span><br><span class="line">        cr.accept(<span class="keyword">new</span> AdviceWeaver(adviceId, isTracing, skipJDKTrace, cr.getClassName(), methodNameMatcher, affect,</span><br><span class="line">                        cw), EXPAND_FRAMES);</span><br><span class="line">        <span class="keyword">final</span> <span class="keyword">byte</span>[] enhanceClassByteArray = cw.toByteArray();</span><br><span class="line">        <span class="comment">// 生成成功,推入缓存</span></span><br><span class="line">        classBytesCache.put(classBeingRedefined, enhanceClassByteArray);</span><br><span class="line">        <span class="comment">// dump the class</span></span><br><span class="line">        dumpClassIfNecessary(className, enhanceClassByteArray, affect);</span><br><span class="line">        <span class="comment">// 成功计数</span></span><br><span class="line">        affect.cCnt(<span class="number">1</span>);</span><br><span class="line">        <span class="comment">// 派遣间谍</span></span><br><span class="line">        <span class="keyword">try</span> &#123;</span><br><span class="line">            spy(inClassLoader);</span><br><span class="line">        &#125;</span><br><span class="line">        <span class="keyword">return</span> enhanceClassByteArray;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">null</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>生成增强字节码一步中的AdviceWeaver中的visitMethod方法是核心,他返回AdviceAdapter实例,其onMethodEnter方法如下<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">protected</span> <span class="keyword">void</span> <span class="title">onMethodEnter</span><span class="params">()</span> </span>&#123;</span><br><span class="line"></span><br><span class="line">    codeLockForTracing.lock(<span class="keyword">new</span> CodeLock.Block() &#123;</span><br><span class="line">        <span class="meta">@Override</span></span><br><span class="line">        <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">code</span><span class="params">()</span> </span>&#123;</span><br><span class="line">            <span class="comment">// 加载before方法</span></span><br><span class="line">            loadAdviceMethod(KEY_ARTHAS_ADVICE_BEFORE_METHOD);</span><br><span class="line">            <span class="comment">// 推入Method.invoke()的第一个参数</span></span><br><span class="line">            pushNull();</span><br><span class="line">            <span class="comment">// 方法参数</span></span><br><span class="line">            loadArrayForBefore();</span><br><span class="line">            <span class="comment">// 调用方法</span></span><br><span class="line">            invokeVirtual(ASM_TYPE_METHOD, ASM_METHOD_METHOD_INVOKE);</span><br><span class="line">            pop();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>这里就是修改操作局部变量表,操作数栈来调用方法,分析loadAdviceMethod加载的methodOnBegin方法<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">methodOnBegin</span><span class="params">(<span class="keyword">int</span> adviceId,ClassLoader loader, String className, </span></span></span><br><span class="line"><span class="function"><span class="params">        String methodName, String methodDesc,Object target, Object[] args)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        <span class="comment">// 构建执行帧栈,保护当前的执行现场</span></span><br><span class="line">        <span class="keyword">final</span> GaStack&lt;Object&gt; frameStack = <span class="keyword">new</span> ThreadUnsafeFixGaStack&lt;Object&gt;(FRAME_STACK_SIZE);</span><br><span class="line">        frameStack.push(loader);</span><br><span class="line">        frameStack.push(className);</span><br><span class="line">        frameStack.push(methodName);</span><br><span class="line">        frameStack.push(methodDesc);</span><br><span class="line">        frameStack.push(target);</span><br><span class="line">        frameStack.push(args);</span><br><span class="line">        <span class="keyword">final</span> AdviceListener listener = getListener(adviceId);</span><br><span class="line">        frameStack.push(listener);</span><br><span class="line">        <span class="comment">// 获取通知器并做前置通知</span></span><br><span class="line">        before(listener, loader, className, methodName, methodDesc, target, args);</span><br><span class="line">        <span class="comment">// 保护当前执行帧栈,压入线程帧栈</span></span><br><span class="line">        threadFrameStackPush(frameStack);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>最终调用watchAdviceListener#before方法开始进行信息获取<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">before</span><span class="params">(ClassLoader loader, Class&lt;?&gt; clazz, ArthasMethod method, Object target, Object[] args)</span><span class="keyword">throws</span> Throwable </span>&#123;</span><br><span class="line">    <span class="comment">// 开始计算本次方法调用耗时</span></span><br><span class="line">    threadLocalWatch.start();</span><br><span class="line">    <span class="keyword">if</span> (command.isBefore()) &#123;</span><br><span class="line">        watching(Advice.newForBefore(loader, clazz, method, target, args));</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>最后生成相应类,相应的方法已经被增强<br>接下来回到JVM的load_new_class_versions方法中<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">res = merge_cp_and_rewrite(the_class, scratch_class, THREAD);</span><br></pre></td></tr></table></figure></p>
+<p>这一步会进行常量池合并,更新属性等,也就是他只更新了指针指向内容,没有更新指针,所以重加载前的类的实例并不受影响</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="http://lovestblog.cn/blog/2014/06/18/jvm-attach" target="_blank" rel="noopener">JVM Attach机制实现</a><br><a href="[http://tech.dianwoda.com/2018/12/20/arthasyuan-ma-fen-xi/](http://tech.dianwoda.com/2018/12/20/arthasyuan-ma-fen-xi/">Arthas源码分析</a><br><a href="[https://zhuanlan.zhihu.com/p/51909016](https://zhuanlan.zhihu.com/p/51909016">JVM之类的热替换原理解读</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/04/27/class文件的Constant Pool/" data-tooltip="Constant Pool" aria-label="下一篇: Constant Pool">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/04/27/class文件的Constant Pool/" data-tooltip="Constant Pool" aria-label="下一篇: Constant Pool">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
