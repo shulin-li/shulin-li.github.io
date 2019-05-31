@@ -135,6 +135,67 @@
     <section class="postShorten-group main-content-wrap">
     
     
+    <article class="postShorten postShorten--thumbnailimg-bottom">
+        <div class="postShorten-wrap">
+            
+            <div class="postShorten-header">
+                <h1 class="postShorten-title">
+                    
+                        <a class="link-unstyled" href="/2019/05/31/项目中的坑(二)/">
+                            项目的坑(二)
+                        </a>
+                    
+                </h1>
+                <div class="postShorten-meta">
+    <time datetime="2019-05-31T18:20:17+08:00">
+	
+		    5月 31, 2019
+    	
+    </time>
+    
+</div>
+
+            </div>
+            
+                <div class="postShorten-content">
+                    <h1 id="与-2F"><a href="#与-2F" class="headerlink" title="/与%2F"></a>/与%2F</h1><p>项目中有一个上传文件的模块,接口是RESTful风格的,文件名在url中,但是文件名有可能是x/y/z/a.txt形式的,很自然的想到直接url编码拼接就完事了,但是测试时发现,请求无论如何都走不到controller。排查之路 启动！  </p>
+<p>第一反应看日志,debug,于是将mvc日志级别设置为debug,断点打到doDispatch方法,结果没有任何日志输出,也没有进到断点。<br>接下来不使用pathvariable,使用requestparam(当然,请求格式也随之改动),同样的参数,成功处理。<br>然后 尝试将参数url编码两次(也就是把%2F也编码)并使用pathvariable,成功接收到参数,参数值是一次编码值。<br>此时已经凌乱了(只是大概猜测坑在“/”)….只能求助于google,发现Stack Overflow上有人讨论过这个问题,原因是出于安全考虑Apache对于所有url部分含有%2F的请求都直接拒绝……<br>他提供了一个参数AllowEncodedSlashes,用来决定是否拒绝,默认false也就是拒绝<br>接下来再次搜索AllowEncodedSlashes并找到UDecoder这个类,并在其中convert方法打上断点<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/tomcat2f.png" alt><br>可以看到在对%后面的两个字符解码之后发现是/并且noSlash为true(AllowEncodedSlashes决定的),直接抛出了异常<br>终于找到了问题原因……直接在tomcat层就返回了,难怪spring日志一直看不到……<br>最终不采用url编码,使用hex转16进制串解决问题  </p>
+<h1 id="header的中文"><a href="#header的中文" class="headerlink" title="header的中文"></a>header的中文</h1><p>还是这个项目,在上传时为了方便前端展示,网盘服务端以及底层存储服务的数据库存储的文件名称都是全路径形式的(a/b/c/d.txt),但是下载的时候肯定不能以这个名称下载,于是在网盘端接受到上传请求时会在请求header中设置content-disposition为截取后的文件名(d.txt)然后上传到存储服务端,存储服务端会解析header并将其存到数据库中,在下载时存储服务端会在响应中设置content-disposition,这样下载的文件名就是正确的了,写完之后自己测试了文件名诸如“a/b/c.txt”的文件<br>发现没有问题。<br>但是将服务部署到测试环境后,前端告诉我他在上传docx类型文件的时候出现问题,查看日志,发现相应异常信息<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/%E5%BC%82%E5%B8%B8.png" alt><br>HttpUtil是自己写的SDK中的http工具类,异常指示的代码如下<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">try</span> (CloseableHttpResponse httpResponse=httpClient.execute(method);</span><br><span class="line">    InputStream contentStream=httpResponse.getEntity().getContent())&#123;</span><br><span class="line">  <span class="keyword">int</span> statusCode = httpResponse.getStatusLine().getStatusCode();</span><br><span class="line">  response = <span class="keyword">new</span> HttpUtilResponse();</span><br><span class="line">  response.setStatus(statusCode);</span><br><span class="line">  response.setBody(IOUtils.toString(contentStream, Constants.DEFAULT_CHARSET));</span><br><span class="line">&#125; <span class="keyword">catch</span> (IOException e) &#123;</span><br><span class="line">  e.printStackTrace();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>结合异常和HttpUtil的代码来看,在execute执行方法将文件上传到存储服务端拿到response后,IOUtils试图从contentStream中读取内容时,该流已经关闭。<br>由于测试时没有测试xlsx/docx等office文件,这些文件的格式又很特殊,一时也拿不准到底是什么原因…..<br>然后使用swagger测试上传接口,发现docx,xlsx上传都没有问题,并且下载后比对MD5值也完全一样,然后就怀疑是前端代码有问题,但又一想 这一段代码根本没和前端交互….完全就是网盘服务端和存储服务端的交互…….而且让前端使用swagger进行测试仍然是这个错……<br>懵逼树下我和我……<br>然后我问前端要了他的完整请求,发现文件名含有中文,会不会是中文的问题呢(虽然对文件名进行了编码转为16进制了……)?<br>于是我在请求中将文件名参数设置为“测试.docx”并进行编码,然后服务端返回了200 success…….一切正常……<br>再次陷入了僵局……<br>走投无路的我“大胆想象” ：“难道‘测试.docx’没问题,但是他的某些特殊的汉字有问题?”,于是我将文件名设置为“阅读.docx”并编码请求,终于  服务端抛出了我找了半天的异常!<br>这是基本可以猜测就是有特殊的汉字在编码后触发了一些特殊异常,debug调试发现execute返回的response中对于“阅读.docx”的请求 显示“400 Bad Request: invalid header value”,继续打断点 关注header<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/%E6%B5%8B%E8%AF%95.png" alt><br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/%E9%98%85%E8%AF%BB.png" alt><br>看图基本可以确认问题了,就是content-disposition 中的中文问题(只有这个header有较大的差别)<br>这里就牵扯到一个问题我们可以使用content-type这个header来指示body的编码格式,那么header的编码由谁指定呢?在Stack Overflow上有人谈到这个问题说只有ASCII码才被保证正确性。<br>知道了根本原因,解决问题就很简单了,将文件名先url编码在设置到content-disposition头中即可。  </p>
+<h2 id="为什么“阅读-docx”会invalid-header-value"><a href="#为什么“阅读-docx”会invalid-header-value" class="headerlink" title="为什么“阅读.docx”会invalid header value?"></a>为什么“阅读.docx”会invalid header value?</h2><p>虽然问题解决了,但是仍然没有搞清楚为什么“阅读.docx”就会invalid,而“测试.docx”就没有问题呢(仅仅说“编码问题”是不够的)?具体是哪块的编码出了问题呢<br>首先 先定位invalid header value错误是在哪里抛出,存储服务端是go代码,不多BB,直接全文搜索关键词“invalid header value”<br>http包下的server.go<br><figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">for</span> _, v := <span class="keyword">range</span> vv &#123;</span><br><span class="line">	<span class="keyword">if</span> !httpguts.ValidHeaderFieldValue(v) &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="literal">nil</span>, badRequestError(<span class="string">"invalid header value"</span>)</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>具体的校验逻辑在httplex.go中<br><figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">ValidHeaderFieldValue</span><span class="params">(v <span class="keyword">string</span>)</span> <span class="title">bool</span></span> &#123;</span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; <span class="built_in">len</span>(v); i++ &#123;</span><br><span class="line">		b := v[i]</span><br><span class="line">		<span class="keyword">if</span> isCTL(b) &amp;&amp; !isLWS(b) &#123;</span><br><span class="line">			<span class="keyword">return</span> <span class="literal">false</span></span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">return</span> <span class="literal">true</span></span><br><span class="line">&#125;</span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">isCTL</span><span class="params">(b <span class="keyword">byte</span>)</span> <span class="title">bool</span></span> &#123;</span><br><span class="line">	<span class="keyword">const</span> del = <span class="number">0x7f</span> <span class="comment">// a CTL</span></span><br><span class="line">	<span class="keyword">return</span> b &lt; <span class="string">' '</span> || b == del</span><br><span class="line">&#125;</span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">isLWS</span><span class="params">(b <span class="keyword">byte</span>)</span> <span class="title">bool</span></span> &#123; <span class="keyword">return</span> b == <span class="string">' '</span> || b == <span class="string">'\t'</span> &#125;</span><br></pre></td></tr></table></figure></p>
+<p>逻辑也比较简单,就是遍历value的byte,根据RFC规范进行判断,‘ ’是32,‘\t’是9<br>找到判断逻辑,再来看Java端的byte是怎么来的<br>一层一层debug,找到httpclient是如何将header的string转为byte的<br>在BasicLineFormatter.java中<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> CharArrayBuffer <span class="title">formatHeader</span><span class="params">(<span class="keyword">final</span> CharArrayBuffer buffer,</span></span></span><br><span class="line"><span class="function"><span class="params">                                    <span class="keyword">final</span> Header header)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">final</span> CharArrayBuffer result;</span><br><span class="line">    <span class="keyword">if</span> (header <span class="keyword">instanceof</span> FormattedHeader) &#123;</span><br><span class="line">        result = ((FormattedHeader)header).getBuffer();</span><br><span class="line">    &#125; <span class="keyword">else</span> &#123;</span><br><span class="line">        result = initBuffer(buffer);</span><br><span class="line">        doFormatHeader(result, header);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> result;</span><br><span class="line"></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>这一步的格式化很简单,string转char 放到CharArrayBuffer中,当然 通过底层socketStream发送时肯定是要发送byte的<br>这一步是在ByteArrayBuffer.java中转换的<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">append</span><span class="params">(<span class="keyword">final</span> <span class="keyword">char</span>[] b, <span class="keyword">final</span> <span class="keyword">int</span> off, <span class="keyword">final</span> <span class="keyword">int</span> len)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">final</span> <span class="keyword">int</span> oldlen = <span class="keyword">this</span>.len;</span><br><span class="line">    <span class="keyword">final</span> <span class="keyword">int</span> newlen = oldlen + len;</span><br><span class="line">    <span class="keyword">if</span> (newlen &gt; <span class="keyword">this</span>.buffer.length) &#123;</span><br><span class="line">        expand(newlen);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">for</span> (<span class="keyword">int</span> i1 = off, i2 = oldlen; i2 &lt; newlen; i1++, i2++) &#123;</span><br><span class="line">        <span class="keyword">this</span>.buffer[i2] = (<span class="keyword">byte</span>) b[i1];</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">this</span>.len = newlen;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
+<p>可以看到,这里遍历然后char直接强转byte(没看源码前,还在猜httpClient是不是通过String#getBytes来转byte的……)<br>测试看看“阅读测试”这4个char被强转为什么byte了<br><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line">    <span class="keyword">char</span> a = <span class="string">'测'</span>;</span><br><span class="line">    System.out.println((<span class="keyword">byte</span>)a);</span><br><span class="line">    <span class="keyword">char</span> b = <span class="string">'试'</span>;</span><br><span class="line">    System.out.println((<span class="keyword">byte</span>)b);</span><br><span class="line">    <span class="keyword">char</span> c = <span class="string">'阅'</span>;</span><br><span class="line">    System.out.println((<span class="keyword">byte</span>)c);</span><br><span class="line">    <span class="keyword">char</span> d = <span class="string">'读'</span>;</span><br><span class="line">    System.out.println((<span class="keyword">byte</span>)d);</span><br><span class="line">-----------</span><br><span class="line"><span class="number">75</span></span><br><span class="line">-<span class="number">43</span></span><br><span class="line"><span class="number">5</span></span><br><span class="line">-<span class="number">5</span></span><br></pre></td></tr></table></figure></p>
+<p>如果只看这四个byte,按照go端的valid逻辑,不管是“测试(-43)”还是“阅读(5/-5)”都应该是无效value,但事实并不是这样<br>这是因为,在Java中,byte是有符号数,但是在golang在byte是无符号的,-43和-5在被当做无符号数时(200+)都是可以通过http的校验逻辑的,但是“阅读”中‘5’这个byte就无法通过,这才是真正的“invalid header value”原因<br>找到这个原因后,我又自己选了几个汉字char 验证了一下<br>‘洗’ byte=23    服务端:invalid header value<br>‘压’ byte=-117 服务端:200 success<br>‘特’ byte=121  服务端:200 success  </p>
+<p>这个bug终于是解决了!<br>其实解决用的时间倒不是很长,但是这个底层原因真的是让我好找啊！没看源码之前各种试String#getBytes方法,尝试各种编码格式比对byte,但没想到底层是直接强转……</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://stackoverflow.com/questions/3235219/urlencoded-forward-slash-is-breaking-url" target="_blank" rel="noopener">urlencoded Forward slash is breaking URL</a><br><a href="https://stackoverflow.com/questions/4400678/what-character-encoding-should-i-use-for-a-http-header" target="_blank" rel="noopener">What character encoding should I use for a HTTP header?</a></p>
+
+                    
+                        
+
+                    
+                    
+                        <p>
+                            <a href="/2019/05/31/项目中的坑(二)/#post-footer" class="postShorten-excerpt_link link">
+                                评论和共享
+                            </a>
+                        </p>
+                    
+                </div>
+            
+        </div>
+        
+            <a href="/2019/05/31/项目中的坑(二)/">
+                <div class="postShorten-thumbnailimg">
+                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg">
+                </div>
+            </a>
+            
+        
+    </article>
+    
+    
     <article class="postShorten postShorten--thumbnailimg-left">
         <div class="postShorten-wrap">
             
@@ -230,7 +291,7 @@
                 <h1 class="postShorten-title">
                     
                         <a class="link-unstyled" href="/2019/03/20/项目中的坑/">
-                            项目的坑
+                            项目的坑(一)
                         </a>
                     
                 </h1>
@@ -405,50 +466,6 @@
             <div class="postShorten-header">
                 <h1 class="postShorten-title">
                     
-                        <a class="link-unstyled" href="/2019/03/01/类加载/">
-                            类加载
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-01T20:12:21+08:00">
-	
-		    3月 01, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>类加载</p>
-                    
-                        <a href="/2019/03/01/类加载/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </div>
-            
-        </div>
-        
-            <a href="/2019/03/01/类加载/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
                         <a class="link-unstyled" href="/2019/03/01/Java反射/">
                             Java反射
                         </a>
@@ -478,6 +495,50 @@
         </div>
         
             <a href="/2019/03/01/Java反射/">
+                <div class="postShorten-thumbnailimg">
+                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
+                </div>
+            </a>
+            
+        
+    </article>
+    
+    
+    <article class="postShorten postShorten--thumbnailimg-left">
+        <div class="postShorten-wrap">
+            
+            <div class="postShorten-header">
+                <h1 class="postShorten-title">
+                    
+                        <a class="link-unstyled" href="/2019/03/01/类加载/">
+                            类加载
+                        </a>
+                    
+                </h1>
+                <div class="postShorten-meta">
+    <time datetime="2019-03-01T20:12:21+08:00">
+	
+		    3月 01, 2019
+    	
+    </time>
+    
+</div>
+
+            </div>
+            
+                <div class="postShorten-excerpt">
+                    <p>类加载</p>
+                    
+                        <a href="/2019/03/01/类加载/" class="postShorten-excerpt_link link">
+                            阅读全文
+                        </a>
+                        
+                    
+                </div>
+            
+        </div>
+        
+            <a href="/2019/03/01/类加载/">
                 <div class="postShorten-thumbnailimg">
                     <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
                 </div>
@@ -530,55 +591,18 @@
         
     </article>
     
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/02/20/JavaIO/">
-                            JavaIO
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-02-20T19:12:21+08:00">
-	
-		    2月 20, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>JavaIO</p>
-                    
-                        <a href="/2019/02/20/JavaIO/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </div>
-            
-        </div>
-        
-            <a href="/2019/02/20/JavaIO/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
     <div class="pagination-bar">
     <ul class="pagination">
         
         
-        <li class="pagination-number">第 1 页 共 1 页</li>
+          <li class="pagination-next">
+            <a class="btn btn--default btn--small" href="/archives/2019/page/2/">
+              <span>下一页</span>
+              <i class="fa fa-angle-right text-base icon-ml"></i>
+            </a>
+          </li>
+        
+        <li class="pagination-number">第 1 页 共 2 页</li>
     </ul>
 </div>
 
