@@ -6,29 +6,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="generator" content="一条咸鱼">
-    <title>项目的坑(二) - 一条咸鱼</title>
+    <title>项目的坑() - 一条咸鱼</title>
     <meta name="author" content="一条咸鱼">
     
     
         <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
     
     
-    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n/与%2F项目中有一个上传文件的模块,接口是RESTful风格的,文件名在url中,但是文件名有可能是x/y/z/a.txt形式的,很自然的想到直接url编码拼接就完事了,但是测试时发现,请求无论如何都走不到controller。排查之路 启动！  \n第一反应看日志,debug,于是将mvc日志级别设置为debug,断点打到doDispatch方法,结果没有任何日志输出,也没有进到断点。接下来不使用pathvariable,使用requestparam(当然,请求格式也随之改动),同样的参数,成功处理。然后 尝试将参数url编码两次(也就是把%2F也编码)并使用pathvariable,成功接收到参数,参数值是一次编码值。此时已经凌乱了(只是大概猜测坑在“/”)….只能求助于google,发现Stack Overflow上有人讨论过这个问题,原因是出于安全考虑Apache对于所有url部分含有%2F的请求都直接拒绝……他提供了一个参数AllowEncodedSlashes,用来决定是否拒绝,默认false也就是拒绝接下来再次搜索AllowEncodedSlashes并找到UDecoder这个类,并在其中convert方法打上断点可以看到在对%后面的两个字符解码之后发现是/并且noSlash为true(AllowEncodedSlashes决定的),直接抛出了异常终于找到了问题原因……直接在tomcat层就返回了,难怪spring日志一直看不到……最终不采用url编码,使用hex转16进制串解决问题  \nheader的中文还是这个项目,在上传时为了方便前端展示,网盘服务端以及底层存储服务的数据库存储的文件名称都是全路径形式的(a/b/c/d.txt),但是下载的时候肯定不能以这个名称下载,于是在网盘端接受到上传请求时会在请求header中设置content-disposition为截取后的文件名(d.txt)然后上传到存储服务端,存储服务端会解析header并将其存到数据库中,在下载时存储服务端会在响应中设置content-disposition,这样下载的文件名就是正确的了,写完之后自己测试了文件名诸如“a/b/c.txt”的文件发现没有问题。但是将服务部署到测试环境后,前端告诉我他在上传docx类型文件的时候出现问题,查看日志,发现相应异常信息HttpUtil是自己写的SDK中的http工具类,异常指示的代码如下123456789try (CloseableHttpResponse httpResponse=httpClient.execute(method);    InputStream contentStream=httpResponse.getEntity().getContent())&#123;  int statusCode = httpResponse.getStatusLine().getStatusCode();  response = new HttpUtilResponse();  response.setStatus(statusCode);  response.setBody(IOUtils.toString(contentStream, Constants.DEFAULT_CHARSET));&#125; catch (IOException e) &#123;  e.printStackTrace();&#125;\n结合异常和HttpUtil的代码来看,在execute执行方法将文件上传到存储服务端拿到response后,IOUtils试图从contentStream中读取内容时,该流已经关闭。由于测试时没有测试xlsx/docx等office文件,这些文件的格式又很特殊,一时也拿不准到底是什么原因…..然后使用swagger测试上传接口,发现docx,xlsx上传都没有问题,并且下载后比对MD5值也完全一样,然后就怀疑是前端代码有问题,但又一想 这一段代码根本没和前端交互….完全就是网盘服务端和存储服务端的交互…….而且让前端使用swagger进行测试仍然是这个错……懵逼树下我和我……然后我问前端要了他的完整请求,发现文件名含有中文,会不会是中文的问题呢(虽然对文件名进行了编码转为16进制了……)?于是我在请求中将文件名参数设置为“测试.docx”并进行编码,然后服务端返回了200 success…….一切正常……再次陷入了僵局……走投无路的我“大胆想象” ：“难道‘测试.docx’没问题,但是他的某些特殊的汉字有问题?”,于是我将文件名设置为“阅读.docx”并编码请求,终于  服务端抛出了我找了半天的异常!这是基本可以猜测就是有特殊的汉字在编码后触发了一些特殊异常,debug调试发现execute返回的response中对于“阅读.docx”的请求 显示“400 Bad Request: invalid header value”,继续打断点 关注header看图基本可以确认问题了,就是content-disposition 中的中文问题(只有这个header有较大的差别)这里就牵扯到一个问题我们可以使用content-type这个header来指示body的编码格式,那么header的编码由谁指定呢?在Stack Overflow上有人谈到这个问题说只有ASCII码才被保证正确性。知道了根本原因,解决问题就很简单了,将文件名先url编码在设置到content-disposition头中即可。  \n为什么“阅读.docx”会invalid header value?虽然问题解决了,但是仍然没有搞清楚为什么“阅读.docx”就会invalid,而“测试.docx”就没有问题呢(仅仅说“编码问题”是不够的)?具体是哪块的编码出了问题呢首先 先定位invalid header value错误是在哪里抛出,存储服务端是go代码,不多BB,直接全文搜索关键词“invalid header value”http包下的server.go12345for _, v := range vv &#123;\tif !httpguts.ValidHeaderFieldValue(v) &#123;\t\treturn nil, badRequestError(\"invalid header value\")\t&#125;&#125;\n具体的校验逻辑在httplex.go中1234567891011121314func ValidHeaderFieldValue(v string) bool &#123;\tfor i := 0; i &lt; len(v); i++ &#123;\t\tb := v[i]\t\tif isCTL(b) &amp;&amp; !isLWS(b) &#123;\t\t\treturn false\t\t&#125;\t&#125;\treturn true&#125;func isCTL(b byte) bool &#123;\tconst del = 0x7f // a CTL\treturn b &lt; ' ' || b == del&#125;func isLWS(b byte) bool &#123; return b == ' ' || b == '\\t' &#125;\n逻辑也比较简单,就是遍历value的byte,根据RFC规范进行判断,‘ ’是32,‘\\t’是9找到判断逻辑,再来看Java端的byte是怎么来的一层一层debug,找到httpclient是如何将header的string转为byte的在BasicLineFormatter.java中123456789101112public CharArrayBuffer formatHeader(final CharArrayBuffer buffer,                                    final Header header) &#123;    final CharArrayBuffer result;    if (header instanceof FormattedHeader) &#123;        result = ((FormattedHeader)header).getBuffer();    &#125; else &#123;        result = initBuffer(buffer);        doFormatHeader(result, header);    &#125;    return result;&#125;\n这一步的格式化很简单,string转char 放到CharArrayBuffer中,当然 通过底层socketStream发送时肯定是要发送byte的这一步是在ByteArrayBuffer.java中转换的1234567891011public void append(final char[] b, final int off, final int len) &#123;    final int oldlen = this.len;    final int newlen = oldlen + len;    if (newlen &gt; this.buffer.length) &#123;        expand(newlen);    &#125;    for (int i1 = off, i2 = oldlen; i2 &lt; newlen; i1++, i2++) &#123;        this.buffer[i2] = (byte) b[i1];    &#125;    this.len = newlen;&#125;\n可以看到,这里遍历然后char直接强转byte(没看源码前,还在猜httpClient是不是通过String#getBytes来转byte的……)测试看看“阅读测试”这4个char被强转为什么byte了12345678910111213    char a = '测';    System.out.println((byte)a);    char b = '试';    System.out.println((byte)b);    char c = '阅';    System.out.println((byte)c);    char d = '读';    System.out.println((byte)d);-----------75-435-5\n如果只看这四个byte,按照go端的valid逻辑,不管是“测试(-43)”还是“阅读(5/-5)”都应该是无效value,但事实并不是这样这是因为,在Java中,byte是有符号数,但是在golang在byte是无符号的,-43和-5在被当做无符号数时(200+)都是可以通过http的校验逻辑的,但是“阅读”中‘5’这个byte就无法通过,这才是真正的“invalid header value”原因找到这个原因后,我又自己选了几个汉字char 验证了一下‘洗’ byte=23    服务端:invalid header value‘压’ byte=-117 服务端:200 success‘特’ byte=121  服务端:200 success  \n这个bug终于是解决了!其实解决用的时间倒不是很长,但是这个底层原因真的是让我好找啊！没看源码之前各种试String#getBytes方法,尝试各种编码格式比对byte,但没想到底层是直接强转……\n参考urlencoded Forward slash is breaking URLWhat character encoding should I use for a HTTP header?","dateCreated":"2019-05-31T18:20:17+08:00","dateModified":"2019-05-31T18:22:50+08:00","datePublished":"2019-05-31T18:20:17+08:00","description":"项目中的坑(二)","headline":"项目的坑(二)","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/05/31/项目中的坑(二)/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/05/31/项目中的坑(二)/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg"}</script>
-    <meta name="description" content="项目中的坑(二)">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n/与%2F项目中有一个上传文件的模块,接口是RESTful风格的,文件名在url中,但是文件名有可能是x/y/z/a.txt形式的,很自然的想到直接url编码拼接就完事了,但是测试时发现,请求无论如何都走不到controller。排查之路 启动！  \n第一反应看日志,debug,于是将mvc日志级别设置为debug,断点打到doDispatch方法,结果没有任何日志输出,也没有进到断点。接下来不使用pathvariable,使用requestparam(当然,请求格式也随之改动),同样的参数,成功处理。然后 尝试将参数url编码两次(也就是把%2F也编码)并使用pathvariable,成功接收到参数,参数值是一次编码值。此时已经凌乱了(只是大概猜测坑在“/”)….只能求助于google,发现Stack Overflow上有人讨论过这个问题,原因是出于安全考虑Apache对于所有url部分含有%2F的请求都直接拒绝……他提供了一个参数AllowEncodedSlashes,用来决定是否拒绝,默认false也就是拒绝接下来再次搜索AllowEncodedSlashes并找到UDecoder这个类,并在其中convert方法打上断点可以看到在对%后面的两个字符解码之后发现是/并且noSlash为true(AllowEncodedSlashes决定的),直接抛出了异常终于找到了问题原因……直接在tomcat层就返回了,难怪spring日志一直看不到……最终不采用url编码,使用hex转16进制串解决问题  \nheader的中文还是这个项目,在上传时为了方便前端展示,网盘服务端以及底层存储服务的数据库存储的文件名称都是全路径形式的(a/b/c/d.txt),但是下载的时候肯定不能以这个名称下载,于是在网盘端接受到上传请求时会在请求header中设置content-disposition为截取后的文件名(d.txt)然后上传到存储服务端,存储服务端会解析header并将其存到数据库中,在下载时存储服务端会在响应中设置content-disposition,这样下载的文件名就是正确的了,写完之后自己测试了文件名诸如“a/b/c.txt”的文件发现没有问题。但是将服务部署到测试环境后,前端告诉我他在上传docx类型文件的时候出现问题,查看日志,发现相应异常信息HttpUtil是自己写的SDK中的http工具类,异常指示的代码如下123456789try (CloseableHttpResponse httpResponse=httpClient.execute(method);    InputStream contentStream=httpResponse.getEntity().getContent())&#123;  int statusCode = httpResponse.getStatusLine().getStatusCode();  response = new HttpUtilResponse();  response.setStatus(statusCode);  response.setBody(IOUtils.toString(contentStream, Constants.DEFAULT_CHARSET));&#125; catch (IOException e) &#123;  e.printStackTrace();&#125;\n结合异常和HttpUtil的代码来看,在execute执行方法将文件上传到存储服务端拿到response后,IOUtils试图从contentStream中读取内容时,该流已经关闭。由于测试时没有测试xlsx/docx等office文件,这些文件的格式又很特殊,一时也拿不准到底是什么原因…..然后使用swagger测试上传接口,发现docx,xlsx上传都没有问题,并且下载后比对MD5值也完全一样,然后就怀疑是前端代码有问题,但又一想 这一段代码根本没和前端交互….完全就是网盘服务端和存储服务端的交互…….而且让前端使用swagger进行测试仍然是这个错……懵逼树下我和我……然后我问前端要了他的完整请求,发现文件名含有中文,会不会是中文的问题呢(虽然对文件名进行了编码转为16进制了……)?于是我在请求中将文件名参数设置为“测试.docx”并进行编码,然后服务端返回了200 success…….一切正常……再次陷入了僵局……走投无路的我“大胆想象” ：“难道‘测试.docx’没问题,但是他的某些特殊的汉字有问题?”,于是我将文件名设置为“阅读.docx”并编码请求,终于  服务端抛出了我找了半天的异常!这是基本可以猜测就是有特殊的汉字在编码后触发了一些特殊异常,debug调试发现execute返回的response中对于“阅读.docx”的请求 显示“400 Bad Request: invalid header value”,继续打断点 关注header看图基本可以确认问题了,就是content-disposition 中的中文问题(只有这个header有较大的差别)这里就牵扯到一个问题我们可以使用content-type这个header来指示body的编码格式,那么header的编码由谁指定呢?在Stack Overflow上有人谈到这个问题说只有ASCII码才被保证正确性。知道了根本原因,解决问题就很简单了,将文件名先url编码在设置到content-disposition头中即可。  \n为什么“阅读.docx”会invalid header value?虽然问题解决了,但是仍然没有搞清楚为什么“阅读.docx”就会invalid,而“测试.docx”就没有问题呢(仅仅说“编码问题”是不够的)?具体是哪块的编码出了问题呢首先 先定位invalid header value错误是在哪里抛出,存储服务端是go代码,不多BB,直接全文搜索关键词“invalid header value”http包下的server.go12345for _, v := range vv &#123;\tif !httpguts.ValidHeaderFieldValue(v) &#123;\t\treturn nil, badRequestError(\"invalid header value\")\t&#125;&#125;\n具体的校验逻辑在httplex.go中1234567891011121314func ValidHeaderFieldValue(v string) bool &#123;\tfor i := 0; i &lt; len(v); i++ &#123;\t\tb := v[i]\t\tif isCTL(b) &amp;&amp; !isLWS(b) &#123;\t\t\treturn false\t\t&#125;\t&#125;\treturn true&#125;func isCTL(b byte) bool &#123;\tconst del = 0x7f // a CTL\treturn b &lt; ' ' || b == del&#125;func isLWS(b byte) bool &#123; return b == ' ' || b == '\\t' &#125;\n逻辑也比较简单,就是遍历value的byte,根据RFC规范进行判断,‘ ’是32,‘\\t’是9找到判断逻辑,再来看Java端的byte是怎么来的一层一层debug,找到httpclient是如何将header的string转为byte的在BasicLineFormatter.java中123456789101112public CharArrayBuffer formatHeader(final CharArrayBuffer buffer,                                    final Header header) &#123;    final CharArrayBuffer result;    if (header instanceof FormattedHeader) &#123;        result = ((FormattedHeader)header).getBuffer();    &#125; else &#123;        result = initBuffer(buffer);        doFormatHeader(result, header);    &#125;    return result;&#125;\n这一步的格式化很简单,string转char 放到CharArrayBuffer中,当然 通过底层socketStream发送时肯定是要发送byte的这一步是在ByteArrayBuffer.java中转换的1234567891011public void append(final char[] b, final int off, final int len) &#123;    final int oldlen = this.len;    final int newlen = oldlen + len;    if (newlen &gt; this.buffer.length) &#123;        expand(newlen);    &#125;    for (int i1 = off, i2 = oldlen; i2 &lt; newlen; i1++, i2++) &#123;        this.buffer[i2] = (byte) b[i1];    &#125;    this.len = newlen;&#125;\n可以看到,这里遍历然后char直接强转byte(没看源码前,还在猜httpClient是不是通过String#getBytes来转byte的……)测试看看“阅读测试”这4个char被强转为什么byte了12345678910111213    char a = '测';    System.out.println((byte)a);    char b = '试';    System.out.println((byte)b);    char c = '阅';    System.out.println((byte)c);    char d = '读';    System.out.println((byte)d);-----------75-435-5\n如果只看这四个byte,按照go端的valid逻辑,不管是“测试(-43)”还是“阅读(5/-5)”都应该是无效value,但事实并不是这样这是因为,在Java中,byte是有符号数,但是在golang在byte是无符号的,-43和-5在被当做无符号数时(200+)都是可以通过http的校验逻辑的,但是“阅读”中‘5’这个byte就无法通过,这才是真正的“invalid header value”原因找到这个原因后,我又自己选了几个汉字char 验证了一下‘洗’ byte=23    服务端:invalid header value‘压’ byte=-117 服务端:200 success‘特’ byte=121  服务端:200 success  \n这个bug终于是解决了!其实解决用的时间倒不是很长,但是这个底层原因真的是让我好找啊！没看源码之前各种试String#getBytes方法,尝试各种编码格式比对byte,但没想到底层是直接强转……\n参考urlencoded Forward slash is breaking URLWhat character encoding should I use for a HTTP header?","dateCreated":"2019-03-20T17:29:38+08:00","dateModified":"2019-05-31T18:23:50+08:00","datePublished":"2019-03-20T17:29:38+08:00","description":"项目中的坑","headline":"项目的坑()","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/03/20/项目中的坑(二)/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/03/20/项目中的坑(二)/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg"}</script>
+    <meta name="description" content="项目中的坑">
 <meta property="og:type" content="blog">
-<meta property="og:title" content="项目的坑(二)">
-<meta property="og:url" content="http://yoursite.com/2019/05/31/项目中的坑(二)/index.html">
+<meta property="og:title" content="项目的坑()">
+<meta property="og:url" content="http://yoursite.com/2019/03/20/项目中的坑(二)/index.html">
 <meta property="og:site_name" content="一条咸鱼">
-<meta property="og:description" content="项目中的坑(二)">
+<meta property="og:description" content="项目中的坑">
 <meta property="og:locale" content="zh-cn">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/tomcat2f.png">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/%E5%BC%82%E5%B8%B8.png">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/%E6%B5%8B%E8%AF%95.png">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/%E9%98%85%E8%AF%BB.png">
-<meta property="og:updated_time" content="2019-05-31T10:22:50.511Z">
+<meta property="og:updated_time" content="2019-05-31T10:23:50.546Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="项目的坑(二)">
-<meta name="twitter:description" content="项目中的坑(二)">
+<meta name="twitter:title" content="项目的坑()">
+<meta name="twitter:description" content="项目中的坑">
 <meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/project/tomcat2f.png">
 <meta property="fb:app_id" content="[object Object]">
     
@@ -146,14 +146,14 @@
                 <div class="post-header main-content-wrap text-center">
     
         <h1 class="post-title">
-            项目的坑(二)
+            项目的坑()
         </h1>
     
     
         <div class="post-meta">
-    <time datetime="2019-05-31T18:20:17+08:00">
+    <time datetime="2019-03-20T17:29:38+08:00">
 	
-		    5月 31, 2019
+		    3月 20, 2019
     	
     </time>
     
@@ -201,7 +201,8 @@
         <ul class="post-actions post-action-nav">
             <li class="post-action">
                 
-                    <a class="post-action-btn btn btn--disabled">
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/04/27/class文件的Constant Pool/" data-tooltip="Constant Pool" aria-label="上一篇: Constant Pool">
                 
                     <i class="fa fa-angle-left" aria-hidden="true"></i>
                     <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
@@ -210,7 +211,7 @@
             <li class="post-action">
                 
                     
-                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/05/10/Java Agent/" data-tooltip="Java Agent" aria-label="下一篇: Java Agent">
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/20/项目中的坑/" data-tooltip="项目的坑(一)" aria-label="下一篇: 项目的坑(一)">
                 
                     <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
                     <i class="fa fa-angle-right" aria-hidden="true"></i>
@@ -220,7 +221,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
@@ -262,7 +263,8 @@
         <ul class="post-actions post-action-nav">
             <li class="post-action">
                 
-                    <a class="post-action-btn btn btn--disabled">
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/04/27/class文件的Constant Pool/" data-tooltip="Constant Pool" aria-label="上一篇: Constant Pool">
                 
                     <i class="fa fa-angle-left" aria-hidden="true"></i>
                     <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
@@ -271,7 +273,7 @@
             <li class="post-action">
                 
                     
-                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/05/10/Java Agent/" data-tooltip="Java Agent" aria-label="下一篇: Java Agent">
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/03/20/项目中的坑/" data-tooltip="项目的坑(一)" aria-label="下一篇: 项目的坑(一)">
                 
                     <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
                     <i class="fa fa-angle-right" aria-hidden="true"></i>
@@ -281,7 +283,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
