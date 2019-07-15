@@ -6,24 +6,31 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="generator" content="一条咸鱼">
-    <title>归档: 2019 - 一条咸鱼</title>
+    <title>Linux学习笔记 - 一条咸鱼</title>
     <meta name="author" content="一条咸鱼">
     
     
         <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
     
     
-    <script type="application/ld+json">{}</script>
-    <meta name="description" content="Java开发">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"task_struct结构权限管理1234const struct cred __rcu *real_cred; /* objective and real subjective task\t\t\t\t * credentials (COW) */const struct cred __rcu *cred;\t/* effective (overridable) subjective task\t\t\t\t * credentials (COW) */\ncred和real_cred分别限制了“当前线程可以操作哪些资源”以及“哪些线程可以操作当前线程”cred的定义如下12345678910struct cred &#123;        kuid_t          uid;            /* real UID of the task */        kgid_t          gid;            /* real GID of the task */        kuid_t          suid;           /* saved UID of the task */        kgid_t          sgid;           /* saved GID of the task */        kuid_t          euid;           /* effective UID of the task */        kgid_t          egid;           /* effective GID of the task */        kuid_t          fsuid;          /* UID for VFS ops */        kgid_t          fsgid;          /* GID for VFS ops */&#125;\nuid与gid分别指启动进程的用户id以及用户组id,euid和egid的是真正进行权限校验时的比对值,部分情况下其与uid,gid一致但是考虑这么一种情况:passwd程序可以由任何用户执行,但是他需要修改/etc/passwd文件,而改文件对于非root用户都是只读的,如果使用uid进行权限校验,就无法修改/etc/passwd文件可以通过chmod u+s program解决这个问题,u+s表示set-user-id,他的意思是当启动这个程序的时候 将对应进程的euid/fsuid设置为程序的所有者id(passwd的是root),这样当passwd要操作/etc/passwd文件时,检查euid,发现是root 就可以对该文件进行修改。同时suid一直保存的就是程序的所有者id,这样进程可以在运行时随时调用setuid进行修改。  \n栈帧用户态函数栈当A函数调用B函数时,首先将函数B的参数压栈(也可能全在寄存器里),然后是函数A的返回地址,接下来创建函数B的栈帧,先保存RBP寄存器的值(指向的是函数A的栈基址),然后更新RBP寄存器的值,指向B函数栈基址,此时根据RBP寄存器的值(B的栈基址) 向上寻址(到函数A的栈帧)就能找到函数B需要的参数,当函数B执行完后,返回值保存在EAX寄存器中,然后更新RBP寄存器为B的栈基址的值(也就是A的栈基址,这里有点像指针与指针指向的值的关系),然后根据返回地址跳转回A函数。\n内核态函数栈Linux为了内核的数据安全(防止用户用户直接修改内核数据),系统调用都在内核态用内核操作内核地址进行数据修改这里就涉及到CPU上下文保存的问题。task_struct中有个stack的void*变量,其指向的就是内核栈,内核栈的顶端是一个pt_regs结构,这里保存了大量寄存器的值(CPU上下文切换),同样自高向低增长,在他的最低端是一个thread_info结构通过这个结构,当一段代码在内核态执行时可以通过thread_info找到对应的task_struct结构体在更新版的内核中当前程序的task_struct变量被保存在Per Cpu变量中,每一次进程切换时都会修改这个变量,这样就能直接获取到当前正在运行的程序的相应结构体\n调度调度结构在task_struct结构体中有一个int变量用来表示该task的调度策略,如FIFO/RR/Deadline的实时调度策略,或normal/batch/idle的普通调度策略还有一个entity调度实体变量,其封装了一些调度信息(对于cfs调度策略下的调度实体,封装了vruntime,权重,红黑树结点指针等)1234567891011struct sched_entity &#123;\tstruct load_weight\t\tload;\tstruct rb_node\t\t\trun_node;\tstruct list_head\t\tgroup_node;\tunsigned int\t\t\ton_rq;\tu64\t\t\t\texec_start;\tu64\t\t\t\tsum_exec_runtime;\tu64\t\t\t\tvruntime;\tu64\t\t\t\tprev_sum_exec_runtime;\tu64\t\t\t\tnr_migrations;&#125;;\n每一个CPU都会有一个rq结构体,用来描述该cpu上的所有进程,根据调度实体的不同,其中由包含多个调度队列123456struct rq &#123;\tstruct cfs_rq cfs;\tstruct rt_rq rt;\tstruct dl_rq dl;\tstruct task_struct *curr, *idle, *stop;&#125;;\n这里关注一下,cfs_rq12345678910111213/* CFS-related fields in a runqueue */struct cfs_rq &#123;\tstruct load_weight load;\tunsigned int nr_running, h_nr_running;\tu64 exec_clock;\tu64 min_vruntime;#ifndef CONFIG_64BIT\tu64 min_vruntime_copy;#endif\tstruct rb_root tasks_timeline;\tstruct rb_node *rb_leftmost;\tstruct sched_entity *curr, *next, *last, *skip;&#125;;\n\n调度类task_struct的sched_class *变量指向的就是该进程的调度实体123456789101112131415161718192021struct sched_class &#123;\tconst struct sched_class *next;\tvoid (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);\tvoid (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);\tvoid (*yield_task) (struct rq *rq);\tbool (*yield_to_task) (struct rq *rq, struct task_struct *p, bool preempt);\tvoid (*check_preempt_curr) (struct rq *rq, struct task_struct *p, int flags);\tstruct task_struct * (*pick_next_task) (struct rq *rq,\t\t\t\t\t\tstruct task_struct *prev,\t\t\t\t\t\tstruct rq_flags *rf);\tvoid (*put_prev_task) (struct rq *rq, struct task_struct *p);\tvoid (*set_curr_task) (struct rq *rq);\tvoid (*task_tick) (struct rq *rq, struct task_struct *p, int queued);\tvoid (*task_fork) (struct task_struct *p);\tvoid (*task_dead) (struct task_struct *p);\tvoid (*switched_from) (struct rq *this_rq, struct task_struct *task);\tvoid (*switched_to) (struct rq *this_rq, struct task_struct *task);\tvoid (*prio_changed) (struct rq *this_rq, struct task_struct *task, int oldprio);\tunsigned int (*get_rr_interval) (struct rq *rq,\t\t\t\t\t struct task_struct *task);\tvoid (*update_curr) (struct rq *rq)\n调度类中定义了大量的方法,用于操作调度队列,同时其第一个next变量表情各种的调度类其实是一个队列,当进行进程调度时,遍历调度类队列,依次调用其调度方法123456789101112131415161718/* * Pick up the highest-prio task: */static inline struct task_struct *pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)&#123;\tconst struct sched_class *class;\tstruct task_struct *p;\tfor_each_class(class) &#123;\t\tp = class-&gt;pick_next_task(rq, prev, rf);\t\tif (p) &#123;\t\t\tif (unlikely(p == RETRY_TASK))\t\t\t\tgoto again;\t\t\treturn p;\t\t&#125;\t&#125;&#125;\n这里的遍历是按照调度类的优先级遍历的,所以实时进程的调度类被最先遍历,也被最先调度。  \nCFSCFS的基本思想是:“设定一个调度周期,尽量让每个可运行进程等到CPU的时间不超过这个调度周期,同时根据进程的优先级,加权计算进程运行时间(vruntime),优先级高的,其时间’流逝更慢‘” 。每次调度时都会选择vruntime最小的进程。  \n\n为防止“新进程vruntime为0,不断被调度从而饿死其他进程”的情况出现,会记录每个cpu上cfs队列的最小vruntime,然后根据该最小值,设置新进程的vruntime  \n为防止“当长时间休眠的进程被唤醒时,其vruntime远小于其他进程的值,从而不断被调度进而饿死其他进程”的情况出现,当休眠进程被唤醒时,会根据min-vruntime的值对其进行补偿。\n当待调度进程数非常多的时候,按照CFS的基本思想,每个进程的运行时间会变的非常小,过于频繁的调度会降低CPU利用率,所以CFS还规定了一个进程占用CPU的最小时间,如果进程运行时间小于这个值,是不会被调度的,所以真实调度周期也就不再遵循最初的设计值  主动调度当进程在做IO这种需要等待的操作时,他可以主动的要求进行进程调度,以将CPU让给其他进程调度函数的主要逻辑在__schedule中,不论是主动调度还是抢占式调度,最终都会走到这个函数。  123456789101112static void __sched notrace __schedule(bool preempt)&#123;\tstruct task_struct *prev, *next;\tstruct rq_flags rf;\tstruct rq *rq;\tint cpu;\tcpu = smp_processor_id();\trq = cpu_rq(cpu);\tprev = rq-&gt;curr;\tnext = pick_next_task(rq, prev, &amp;rf);    clear_tsk_need_resched(prev);    clear_preempt_need_resched();\n\n\n首先拿到当前CPU上的rq,然后获取下一个任务1234567891011121314151617181920212223242526static inline struct task_struct *pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)&#123;\tconst struct sched_class *class;\tstruct task_struct *p;\tif (likely((prev-&gt;sched_class == &amp;idle_sched_class ||\t\t    prev-&gt;sched_class == &amp;fair_sched_class) &amp;&amp;\t\t   rq-&gt;nr_running == rq-&gt;cfs.h_nr_running)) &#123;\t\tp = fair_sched_class.pick_next_task(rq, prev, rf);\t\tif (unlikely(p == RETRY_TASK))\t\t\tgoto again;\t\t/* Assumes fair_sched_class-&gt;next == idle_sched_class */\t\tif (unlikely(!p))\t\t\tp = idle_sched_class.pick_next_task(rq, prev, rf);\t\treturn p;\t&#125;again:\tfor_each_class(class) &#123;\t\tp = class-&gt;pick_next_task(rq, prev, rf);\t\tif (p) &#123;\t\t\tif (unlikely(p == RETRY_TASK))\t\t\t\tgoto again;\t\t\treturn p;\t\t&#125;\t&#125;&#125;\n由于大多数情况下,都是普通进程的调度,所以先进行判断并调用cfs调度类的调度函数,cfs的调度函数就是更新当前进程的vruntime值,取红黑树的最左node,得到node对应的entity,判断最左entity和当前进程entity的vruntime大小,以决定是否进行进程切换。  \n进程切换进程切换,主要是切换进程空间和CPU寄存器。123456if (likely(prev != next)) &#123;\t\trq-&gt;nr_switches++;\t\trq-&gt;curr = next;\t\t++*switch_count;......\t\trq = context_switch(rq, prev, next, &amp;rf);\ncontext_switch会先切换进程空间,再切换内核栈栈顶指针,context_switch的最后三行指令如下123switch_to(prev, next, prev);barrier();return finish_task_switch(prev);\n寄存器切换的核心逻辑在__switch_to函数中1234567891011121314151617__visible __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev_p, struct task_struct *next_p)&#123;\tstruct thread_struct *prev = &amp;prev_p-&gt;thread;\tstruct thread_struct *next = &amp;next_p-&gt;thread;......\tint cpu = smp_processor_id();\tstruct tss_struct *tss = &amp;per_cpu(cpu_tss, cpu);......\tload_TLS(next, cpu);......\tthis_cpu_write(current_task, next_p);\t/* Reload esp0 and ss1.  This changes current_thread_info(). */\tload_sp0(tss, next);......\treturn prev_p;&#125;\n在这里,会修改上面提到的Per cpu变量current_task,将其指向当前进程当switch_to返回后,CPU上运行的进程已经切换完毕,调用switch_to之前是A进程,返回后已经是B进程了用户栈切换在内存切换时完成,内核栈在修改current_task指针时完成(新task的stack指向新内核栈),内核栈栈顶指针在switch_to之前的汇编代码中切换,用户态栈顶指针在新task的pt_regs结构体中。由于所有的进程调度都会走到schedule函数,也就会走到上面的最后三行代码,switch_to返回后,指令寄存器指针指向第三行代码(barrier是一个编译器指令)所以当B进程被调度回来后,他理应执行这个方法,所以也就不需要修改指令寄存器的值。至此,主动式调度完成  \n抢占式调度CPU的每一个时钟周期,会触发一个时钟中断,时钟中断处理函数会检查是否需要抢占。首先拿到当前task的调度类,调用其task_tick函数,首先判断其运行时间是否大于一个调度周期中其应当运行的时间,如果大于,说明应当被抢占,但此时并不会进行进程切换,仅仅是将当前TIF_NEED_RESCHED置位,真正的调度要等到当前进程自己调用schedule方法(跟主动调用不是一个意思),对于用户态的系统调用返回,中断返回,内核态的中断返回等都是调度的时机,其会检查resched标志位,并进行调度\n参考趣谈Linux操作系统从几个问题开始理解CFS调度器\n","dateCreated":"2019-05-28T18:31:08+08:00","dateModified":"2019-06-22T19:12:33+08:00","datePublished":"2019-05-28T18:31:08+08:00","description":"","headline":"Linux学习笔记","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/05/28/线程及其调度/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/05/28/线程及其调度/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"}</script>
+    <meta name="description" content="task_struct结构权限管理1234const struct cred __rcu *real_cred; /* objective and real subjective task				 * credentials (COW) */const struct cred __rcu *cred;	/* effective (overridable) subjective task				 *">
 <meta property="og:type" content="blog">
-<meta property="og:title" content="一条咸鱼">
-<meta property="og:url" content="http://yoursite.com/archives/2019/index.html">
+<meta property="og:title" content="Linux学习笔记">
+<meta property="og:url" content="http://yoursite.com/2019/05/28/线程及其调度/index.html">
 <meta property="og:site_name" content="一条咸鱼">
-<meta property="og:description" content="Java开发">
+<meta property="og:description" content="task_struct结构权限管理1234const struct cred __rcu *real_cred; /* objective and real subjective task				 * credentials (COW) */const struct cred __rcu *cred;	/* effective (overridable) subjective task				 *">
 <meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/user-stack.jpg">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/kernel-stack.jpeg">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/all-struct.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/rq-entity.jpeg">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/all.jpeg">
+<meta property="og:updated_time" content="2019-06-22T11:12:33.983Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="一条咸鱼">
-<meta name="twitter:description" content="Java开发">
+<meta name="twitter:title" content="Linux学习笔记">
+<meta name="twitter:description" content="task_struct结构权限管理1234const struct cred __rcu *real_cred; /* objective and real subjective task				 * credentials (COW) */const struct cred __rcu *cred;	/* effective (overridable) subjective task				 *">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/user-stack.jpg">
 <meta property="fb:app_id" content="[object Object]">
     
     
@@ -33,6 +40,12 @@
         <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
     
     
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
     
     
     <!--STYLES-->
@@ -54,7 +67,7 @@
         
     
 
-<header id="header" data-behavior="1">
+<header id="header" data-behavior="4">
     <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
     <div class="header-title">
         <a class="header-title-link" href="/ ">一条咸鱼</a>
@@ -77,7 +90,7 @@
         
     
 
-<nav id="sidebar" data-behavior="1">
+<nav id="sidebar" data-behavior="4">
     <div class="sidebar-container">
         
             <div class="sidebar-profile">
@@ -127,70 +140,18 @@
 </nav>
 
             
-            <div id="main" data-behavior="1"
-                 class="
-                        hasCoverMetaIn
-                        ">
-                
-    <section class="postShorten-group main-content-wrap">
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            Linux学习笔记
+        </h1>
     
     
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/05/31/项目中的坑(二)/">
-                            项目的坑(二)
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-05-31T18:23:56+08:00">
-	
-		    5月 31, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>项目中的坑(二)<br>
-                    
-                        <a href="/2019/05/31/项目中的坑(二)/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </p></div>
-            
-        </div>
-        
-            <a href="/2019/05/31/项目中的坑(二)/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-bottom">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/05/28/线程及其调度/">
-                            Linux学习笔记
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
+        <div class="post-meta">
     <time datetime="2019-05-28T18:31:08+08:00">
 	
 		    5月 28, 2019
@@ -199,10 +160,23 @@
     
 </div>
 
-            </div>
+    
+</div>
+
             
-                <div class="postShorten-content">
-                    <h1 id="task-struct结构"><a href="#task-struct结构" class="headerlink" title="task_struct结构"></a>task_struct结构</h1><h2 id="权限管理"><a href="#权限管理" class="headerlink" title="权限管理"></a>权限管理</h2><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">const</span> <span class="class"><span class="keyword">struct</span> <span class="title">cred</span> __<span class="title">rcu</span> *<span class="title">real_cred</span>;</span> <span class="comment">/* objective and real subjective task</span></span><br><span class="line"><span class="comment">				 * credentials (COW) */</span></span><br><span class="line"><span class="keyword">const</span> <span class="class"><span class="keyword">struct</span> <span class="title">cred</span> __<span class="title">rcu</span> *<span class="title">cred</span>;</span>	<span class="comment">/* effective (overridable) subjective task</span></span><br><span class="line"><span class="comment">				 * credentials (COW) */</span></span><br></pre></td></tr></table></figure>
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <h1 id="task-struct结构"><a href="#task-struct结构" class="headerlink" title="task_struct结构"></a>task_struct结构</h1><h2 id="权限管理"><a href="#权限管理" class="headerlink" title="权限管理"></a>权限管理</h2><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">const</span> <span class="class"><span class="keyword">struct</span> <span class="title">cred</span> __<span class="title">rcu</span> *<span class="title">real_cred</span>;</span> <span class="comment">/* objective and real subjective task</span></span><br><span class="line"><span class="comment">				 * credentials (COW) */</span></span><br><span class="line"><span class="keyword">const</span> <span class="class"><span class="keyword">struct</span> <span class="title">cred</span> __<span class="title">rcu</span> *<span class="title">cred</span>;</span>	<span class="comment">/* effective (overridable) subjective task</span></span><br><span class="line"><span class="comment">				 * credentials (COW) */</span></span><br></pre></td></tr></table></figure>
 <p>cred和real_cred分别限制了“当前线程可以操作哪些资源”以及“哪些线程可以操作当前线程”<br>cred的定义如下<br><figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">cred</span> &#123;</span></span><br><span class="line">        <span class="keyword">kuid_t</span>          uid;            <span class="comment">/* real UID of the task */</span></span><br><span class="line">        <span class="keyword">kgid_t</span>          gid;            <span class="comment">/* real GID of the task */</span></span><br><span class="line">        <span class="keyword">kuid_t</span>          suid;           <span class="comment">/* saved UID of the task */</span></span><br><span class="line">        <span class="keyword">kgid_t</span>          sgid;           <span class="comment">/* saved GID of the task */</span></span><br><span class="line">        <span class="keyword">kuid_t</span>          euid;           <span class="comment">/* effective UID of the task */</span></span><br><span class="line">        <span class="keyword">kgid_t</span>          egid;           <span class="comment">/* effective GID of the task */</span></span><br><span class="line">        <span class="keyword">kuid_t</span>          fsuid;          <span class="comment">/* UID for VFS ops */</span></span><br><span class="line">        <span class="keyword">kgid_t</span>          fsgid;          <span class="comment">/* GID for VFS ops */</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure></p>
 <p>uid与gid分别指启动进程的用户id以及用户组id,euid和egid的是真正进行权限校验时的比对值,部分情况下其与uid,gid一致<br>但是考虑这么一种情况:passwd程序可以由任何用户执行,但是他需要修改/etc/passwd文件,而改文件对于非root用户都是只读的,如果使用uid进行权限校验,就无法修改/etc/passwd文件<br>可以通过chmod u+s program解决这个问题,u+s表示set-user-id,他的意思是当启动这个程序的时候 将对应进程的euid/fsuid设置为程序的所有者id(passwd的是root),这样当passwd要操作/etc/passwd文件时,检查euid,发现是root 就可以对该文件进行修改。<br>同时suid一直保存的就是程序的所有者id,这样进程可以在运行时随时调用setuid进行修改。  </p>
 <h2 id="栈帧"><a href="#栈帧" class="headerlink" title="栈帧"></a>栈帧</h2><h3 id="用户态函数栈"><a href="#用户态函数栈" class="headerlink" title="用户态函数栈"></a>用户态函数栈</h3><p>当A函数调用B函数时,首先将函数B的参数压栈(也可能全在寄存器里),然后是函数A的返回地址,接下来创建函数B的栈帧,先保存RBP寄存器的值(指向的是函数A的栈基址),然后更新RBP寄存器的值,指向B函数栈基址,此时根据RBP寄存器的值(B的栈基址) 向上寻址(到函数A的栈帧)就能找到函数B需要的参数,当函数B执行完后,返回值保存在EAX寄存器中,然后更新RBP寄存器为B的栈基址的值(也就是A的栈基址,这里有点像指针与指针指向的值的关系),然后根据返回地址跳转回A函数。<br><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux-thread/%E7%BB%93%E6%9E%84/user-stack.jpg" alt></p>
@@ -230,398 +204,63 @@
 <h2 id="抢占式调度"><a href="#抢占式调度" class="headerlink" title="抢占式调度"></a>抢占式调度</h2><p>CPU的每一个时钟周期,会触发一个时钟中断,时钟中断处理函数会检查是否需要抢占。首先拿到当前task的调度类,调用其task_tick函数,首先判断其运行时间是否大于一个调度周期中其应当运行的时间,如果大于,说明应当被抢占,但此时并不会进行进程切换,仅仅是将当前TIF_NEED_RESCHED置位,真正的调度要等到当前进程自己调用schedule方法(跟主动调用不是一个意思),对于用户态的系统调用返回,中断返回,内核态的中断返回等都是调度的时机,其会检查resched标志位,并进行调度</p>
 <h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://time.geekbang.org/column/article/93014" target="_blank" rel="noopener">趣谈Linux操作系统</a><br><a href="http://linuxperf.com/?p=42" target="_blank" rel="noopener">从几个问题开始理解CFS调度器</a></p>
 
-                    
-                        
+            
 
-                    
-                    
-                        <p>
-                            <a href="/2019/05/28/线程及其调度/#post-footer" class="postShorten-excerpt_link link">
-                                评论和共享
-                            </a>
-                        </p>
-                    
-                </div>
-            
         </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
         
-            <a href="/2019/05/28/线程及其调度/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png">
-                </div>
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/05/31/项目中的坑(二)/" data-tooltip="项目的坑(二)" aria-label="上一篇: 项目的坑(二)">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/05/10/Java Agent/" data-tooltip="Java Agent" aria-label="下一篇: Java Agent">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
+        </li>
+        
+        
             
         
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
+        <li class="post-action">
             
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/05/10/Java Agent/">
-                            Java Agent
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-05-10T23:23:11+08:00">
-	
-		    5月 10, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Back to top">
             
-                <div class="postShorten-excerpt">
-                    <p>Java Agent<br>
-                    
-                        <a href="/2019/05/10/Java Agent/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </p></div>
-            
-        </div>
-        
-            <a href="/2019/05/10/Java Agent/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
-                </div>
+                <i class="fa fa-list" aria-hidden="true"></i>
             </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/04/27/class文件的Constant Pool/">
-                            Constant Pool
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-04-27T15:41:37+08:00">
-	
-		    4月 27, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>Constant Pool<br>
-                    
-                        <a href="/2019/04/27/class文件的Constant Pool/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </p></div>
-            
-        </div>
-        
-            <a href="/2019/04/27/class文件的Constant Pool/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/03/20/项目中的坑/">
-                            项目的坑(一)
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-20T17:29:38+08:00">
-	
-		    3月 20, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>项目中的坑<br>
-                    
-                        <a href="/2019/03/20/项目中的坑/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </p></div>
-            
-        </div>
-        
-            <a href="/2019/03/20/项目中的坑/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/un-net/project.jpg">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/03/13/UDP/">
-                            UDP
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-13T11:10:20+08:00">
-	
-		    3月 13, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>UDP</p>
-                    
-                        <a href="/2019/03/13/UDP/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </div>
-            
-        </div>
-        
-            <a href="/2019/03/13/UDP/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/03/06/TCP的连接/">
-                            TCP
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-06T13:14:45+08:00">
-	
-		    3月 06, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>TCP</p>
-                    
-                        <a href="/2019/03/06/TCP的连接/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </div>
-            
-        </div>
-        
-            <a href="/2019/03/06/TCP的连接/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/linux/linuxcover.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/03/04/GC/">
-                            GC
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-04T14:51:13+08:00">
-	
-		    3月 04, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>GC<br>
-                    
-                        <a href="/2019/03/04/GC/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </p></div>
-            
-        </div>
-        
-            <a href="/2019/03/04/GC/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fweekly3%2FJava.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/03/01/Java反射/">
-                            Java反射
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-01T20:12:21+08:00">
-	
-		    3月 01, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>Java反射</p>
-                    
-                        <a href="/2019/03/01/Java反射/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </div>
-            
-        </div>
-        
-            <a href="/2019/03/01/Java反射/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    
-    <article class="postShorten postShorten--thumbnailimg-left">
-        <div class="postShorten-wrap">
-            
-            <div class="postShorten-header">
-                <h1 class="postShorten-title">
-                    
-                        <a class="link-unstyled" href="/2019/03/01/类加载/">
-                            类加载
-                        </a>
-                    
-                </h1>
-                <div class="postShorten-meta">
-    <time datetime="2019-03-01T20:12:21+08:00">
-	
-		    3月 01, 2019
-    	
-    </time>
-    
-</div>
-
-            </div>
-            
-                <div class="postShorten-excerpt">
-                    <p>类加载</p>
-                    
-                        <a href="/2019/03/01/类加载/" class="postShorten-excerpt_link link">
-                            阅读全文
-                        </a>
-                        
-                    
-                </div>
-            
-        </div>
-        
-            <a href="/2019/03/01/类加载/">
-                <div class="postShorten-thumbnailimg">
-                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
-                </div>
-            </a>
-            
-        
-    </article>
-    
-    <div class="pagination-bar">
-    <ul class="pagination">
-        
-        
-          <li class="pagination-next">
-            <a class="btn btn--default btn--small" href="/archives/2019/page/2/">
-              <span>下一页</span>
-              <i class="fa fa-angle-right text-base icon-ml"></i>
-            </a>
-          </li>
-        
-        <li class="pagination-number">第 1 页 共 2 页</li>
+        </li>
     </ul>
 </div>
 
-</section>
+
+        
+        
+            
+        
+    </div>
+</article>
 
 
 
@@ -632,6 +271,60 @@
 </footer>
 
             </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/05/31/项目中的坑(二)/" data-tooltip="项目的坑(二)" aria-label="上一篇: 项目的坑(二)">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/05/10/Java Agent/" data-tooltip="Java Agent" aria-label="下一篇: Java Agent">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Back to top">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
             
         </div>
         
@@ -672,6 +365,8 @@
         <!--SCRIPTS-->
 <script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
 <!--SCRIPTS END-->
+
+    
 
 
 
