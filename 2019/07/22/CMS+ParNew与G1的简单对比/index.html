@@ -1,0 +1,391 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>CMS+ParNew与G1性能简单对比 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\nYoungGC对比CMS的YoungGC是ParNew收集器来做  \n测试代码12345678910111213141516171819202122232425262728293031323334public class HighAllocationRate implements Runnable &#123;    private static volatile Double sensorValue;    @Override    public void run() &#123;        while (true) &#123;            sensorValue = Math.random();        &#125;    &#125;    private static void processSensorValue(Double value) &#123;        if (value != null) &#123;            LockSupport.parkNanos(1000);        &#125;    &#125;    public static void main(String[] args) &#123;        int iterations = args.length &gt; 0 ? Integer.parseInt(args[0]) : 30000000;        System.out.println(iterations);        initSensor();        for (int i = 0; i &lt; iterations; i++) &#123;            processSensorValue(sensorValue);        &#125;    &#125;    private static void initSensor() &#123;        Thread sensorReader = new Thread(new HighAllocationRate());        sensorReader.setDaemon(true);        sensorReader.start();    &#125;&#125;\n不断的生成Double类型对象,而只对一个对象保持引用。  \nParNew性能\n\nJVM参数1234567891011-XX:HeapDumpPath=D:/Dump-logs/har-cms-dum.log-Xloggc:D:/GC-logs/har-cms-gc.log-XX:+DisableExplicitGC-XX:+PrintGCDetails-XX:+PrintGCTimeStamps-XX:+PrintGCDateStamps-XX:+HeapDumpOnOutOfMemoryError-XX:+UseConcMarkSweepGC-Xmx8g-Xms8g-Xmn7g\nG1性能\n\nJVM参数1234567891011-XX:HeapDumpPath=D:/Dump-logs/har-g1-dum.log-Xloggc:D:/GC-logs/har-g1-gc.log-XX:+DisableExplicitGC-XX:+PrintGCDetails-XX:+PrintGCTimeStamps-XX:+PrintGCDateStamps-XX:+HeapDumpOnOutOfMemoryError-XX:+UseG1GC-XX:MaxGCPauseMillis=200-Xmx8g-Xms8g\n对比\n\n\n\n吞吐率\n最大暂停时间\n平均暂停时间\nGC性能\n\n\n\n\nParNew\n99.98%\n0.00571S\n0.00156S\n3672178M/S\n\n\nG1\n99.96%\n0.00457S\n0.00285S\n1686187M/S\n\n\n\n对比发现,除了最大暂停时间外,G1全面不敌ParNew,尤其是平均暂停时间和GC性能两项,几乎相差一倍\n日志分析截取一段G1的日志\n12345678910111213141516171819202122232425262019-07-24T11:10:44.582+0800: 641.897: [GC pause (G1 Evacuation Pause) (young), 0.0028870 secs]   [Parallel Time: 0.8 ms, GC Workers: 8]      [GC Worker Start (ms): Min: 641897.0, Avg: 641897.3, Max: 641897.7, Diff: 0.6]      [Ext Root Scanning (ms): Min: 0.0, Avg: 0.1, Max: 0.3, Diff: 0.3, Sum: 1.1]      [Update RS (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0, Sum: 0.0]         [Processed Buffers: Min: 0, Avg: 0.3, Max: 1, Diff: 1, Sum: 2]      [Scan RS (ms): Min: 0.0, Avg: 0.2, Max: 0.3, Diff: 0.2, Sum: 1.4]      [Code Root Scanning (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0, Sum: 0.0]      [Object Copy (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0, Sum: 0.0]      [Termination (ms): Min: 0.0, Avg: 0.1, Max: 0.1, Diff: 0.1, Sum: 0.5]         [Termination Attempts: Min: 1, Avg: 1.0, Max: 1, Diff: 0, Sum: 8]      [GC Worker Other (ms): Min: 0.0, Avg: 0.0, Max: 0.1, Diff: 0.1, Sum: 0.2]      [GC Worker Total (ms): Min: 0.0, Avg: 0.4, Max: 0.7, Diff: 0.6, Sum: 3.2]      [GC Worker End (ms): Min: 641897.7, Avg: 641897.7, Max: 641897.7, Diff: 0.0]   [Code Root Fixup: 0.0 ms]   [Code Root Purge: 0.0 ms]   [Clear CT: 0.8 ms]   [Other: 1.2 ms]      [Choose CSet: 0.0 ms]      [Ref Proc: 0.1 ms]      [Ref Enq: 0.0 ms]      [Redirty Cards: 0.1 ms]      [Humongous Register: 0.2 ms]      [Humongous Reclaim: 0.0 ms]      [Free CSet: 0.6 ms]   [Eden: 4908.0M(4908.0M)-&gt;0.0B(4908.0M) Survivors: 4096.0K-&gt;4096.0K Heap: 4909.1M(8192.0M)-&gt;1167.5K(8192.0M)]\n总的暂停时间是2.88毫秒,RootSanning(扫描根集合)总共花费1.1ms,这一步是STW的,最终的Others是清理重置CardTable的标记位,处理弱引用,选择&amp;清理CSet,这些步骤总共耗时1.2ms,这两个STW的步骤 加起来耗时2.3毫秒  \n相比较之下,ParNew少了对于CSet/CartTable的处理步骤,时间几乎是G1的一半,而两者的活对象拷贝时间相差无几(活对象极少),所以GC性能,ParNew是G1的两倍。  \nOldGC对比CMS对比G1\n测试代码12345678910111213141516171819202122232425262728293031323334353637383940414243444546474849public class PrematurePromotion &#123;    private static final int MAX_CHUNKS = Integer.getInteger(\"max.chunks\", 7_000_000);    private static final Collection&lt;byte[]&gt; accumulatedChunks = new ArrayList&lt;&gt;();    private static void onNewChunk(byte[] bytes) &#123;        accumulatedChunks.add(bytes);        // 如果大于指定的数目        if (accumulatedChunks.size() &gt; MAX_CHUNKS) &#123;            // 取出静态成员变量中的所有值，两两异或，最后赋值给sink变量，只是简单地模拟一下业务间的运算            processBatch(accumulatedChunks);            // 清空            accumulatedChunks.clear();        &#125;    &#125;    public static void main(String[] args) &#123;        long loop = MAX_CHUNKS &lt;&lt; 2;        // 完成有限的工作        while (loop &gt; 0) &#123;            onNewChunk(produceChunk());            loop--;        &#125;    &#125;    private static byte[] produceChunk() &#123;        // 每次生成1k大小的数组        byte[] bytes = new byte[(1 &lt;&lt; 10)];        for (int i = 0; i &lt; bytes.length; i++) &#123;            bytes[i] = (byte) (Math.random() * Byte.MAX_VALUE);        &#125;        return bytes;    &#125;    /** * 仅是简单地保存两两异或的结果 */    public static volatile byte SINK;    public static void processBatch(Collection&lt;byte[]&gt; bytes) &#123;        byte result = 0;        for (byte[] chunk : bytes) &#123;            for (byte b : chunk) &#123;                result ^= b;            &#125;        &#125;        SINK = result;    &#125;&#125;\nCMS性能","dateCreated":"2019-07-22T13:39:13+08:00","dateModified":"2019-07-25T22:17:37+08:00","datePublished":"2019-07-22T13:39:13+08:00","description":"CMS+ParNew与G1性能简单对比","headline":"CMS+ParNew与G1性能简单对比","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/07/22/CMS+ParNew与G1的简单对比/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/07/22/CMS+ParNew与G1的简单对比/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="CMS+ParNew与G1性能简单对比">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="CMS+ParNew与G1性能简单对比">
+<meta property="og:url" content="http://yoursite.com/2019/07/22/CMS+ParNew与G1的简单对比/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="CMS+ParNew与G1性能简单对比">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/CMS-1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/CMS-2.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/G1-1.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/G1-2.png">
+<meta property="og:updated_time" content="2019-07-25T14:17:37.733Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="CMS+ParNew与G1性能简单对比">
+<meta name="twitter:description" content="CMS+ParNew与G1性能简单对比">
+<meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/CMS-1.png">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            CMS+ParNew与G1性能简单对比
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-07-22T13:39:13+08:00">
+	
+		    7月 22, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#YoungGC对比"><span class="toc-text">YoungGC对比</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#测试代码"><span class="toc-text">测试代码</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#ParNew性能"><span class="toc-text">ParNew性能</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#JVM参数"><span class="toc-text">JVM参数</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#G1性能"><span class="toc-text">G1性能</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#JVM参数-1"><span class="toc-text">JVM参数</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#对比"><span class="toc-text">对比</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#日志分析"><span class="toc-text">日志分析</span></a></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#OldGC对比"><span class="toc-text">OldGC对比</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#测试代码-1"><span class="toc-text">测试代码</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#CMS性能"><span class="toc-text">CMS性能</span></a></li></ol></li></ol>
+<h1 id="YoungGC对比"><a href="#YoungGC对比" class="headerlink" title="YoungGC对比"></a>YoungGC对比</h1><p>CMS的YoungGC是ParNew收集器来做  </p>
+<h2 id="测试代码"><a href="#测试代码" class="headerlink" title="测试代码"></a>测试代码</h2><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">HighAllocationRate</span> <span class="keyword">implements</span> <span class="title">Runnable</span> </span>&#123;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">volatile</span> Double sensorValue;</span><br><span class="line"></span><br><span class="line">    <span class="meta">@Override</span></span><br><span class="line">    <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">run</span><span class="params">()</span> </span>&#123;</span><br><span class="line">        <span class="keyword">while</span> (<span class="keyword">true</span>) &#123;</span><br><span class="line">            sensorValue = Math.random();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">processSensorValue</span><span class="params">(Double value)</span> </span>&#123;</span><br><span class="line">        <span class="keyword">if</span> (value != <span class="keyword">null</span>) &#123;</span><br><span class="line">            LockSupport.parkNanos(<span class="number">1000</span>);</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span><span class="params">(String[] args)</span> </span>&#123;</span><br><span class="line">        <span class="keyword">int</span> iterations = args.length &gt; <span class="number">0</span> ? Integer.parseInt(args[<span class="number">0</span>]) : <span class="number">30000000</span>;</span><br><span class="line">        System.out.println(iterations);</span><br><span class="line">        initSensor();</span><br><span class="line"></span><br><span class="line">        <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; iterations; i++) &#123;</span><br><span class="line">            processSensorValue(sensorValue);</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">initSensor</span><span class="params">()</span> </span>&#123;</span><br><span class="line">        Thread sensorReader = <span class="keyword">new</span> Thread(<span class="keyword">new</span> HighAllocationRate());</span><br><span class="line">        sensorReader.setDaemon(<span class="keyword">true</span>);</span><br><span class="line">        sensorReader.start();</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>不断的生成Double类型对象,而只对一个对象保持引用。  </p>
+<h2 id="ParNew性能"><a href="#ParNew性能" class="headerlink" title="ParNew性能"></a>ParNew性能</h2><p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/CMS-1.png" alt></p>
+<p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/CMS-2.png" alt></p>
+<h3 id="JVM参数"><a href="#JVM参数" class="headerlink" title="JVM参数"></a>JVM参数</h3><figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">-XX:HeapDumpPath=D:/Dump-logs/har-cms-dum.log</span><br><span class="line">-Xloggc:D:/GC-logs/har-cms-gc.log</span><br><span class="line">-XX:+DisableExplicitGC</span><br><span class="line">-XX:+PrintGCDetails</span><br><span class="line">-XX:+PrintGCTimeStamps</span><br><span class="line">-XX:+PrintGCDateStamps</span><br><span class="line">-XX:+HeapDumpOnOutOfMemoryError</span><br><span class="line">-XX:+UseConcMarkSweepGC</span><br><span class="line">-Xmx8g</span><br><span class="line">-Xms8g</span><br><span class="line">-Xmn7g</span><br></pre></td></tr></table></figure>
+<h2 id="G1性能"><a href="#G1性能" class="headerlink" title="G1性能"></a>G1性能</h2><p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/G1-1.png" alt></p>
+<p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/GCTest/G1-2.png" alt></p>
+<h3 id="JVM参数-1"><a href="#JVM参数-1" class="headerlink" title="JVM参数"></a>JVM参数</h3><figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">-XX:HeapDumpPath=D:/Dump-logs/har-g1-dum.log</span><br><span class="line">-Xloggc:D:/GC-logs/har-g1-gc.log</span><br><span class="line">-XX:+DisableExplicitGC</span><br><span class="line">-XX:+PrintGCDetails</span><br><span class="line">-XX:+PrintGCTimeStamps</span><br><span class="line">-XX:+PrintGCDateStamps</span><br><span class="line">-XX:+HeapDumpOnOutOfMemoryError</span><br><span class="line">-XX:+UseG1GC</span><br><span class="line">-XX:MaxGCPauseMillis=200</span><br><span class="line">-Xmx8g</span><br><span class="line">-Xms8g</span><br></pre></td></tr></table></figure>
+<h2 id="对比"><a href="#对比" class="headerlink" title="对比"></a>对比</h2><table>
+<thead>
+<tr>
+<th></th>
+<th>吞吐率</th>
+<th>最大暂停时间</th>
+<th>平均暂停时间</th>
+<th>GC性能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ParNew</td>
+<td>99.98%</td>
+<td>0.00571S</td>
+<td>0.00156S</td>
+<td>3672178M/S</td>
+</tr>
+<tr>
+<td>G1</td>
+<td>99.96%</td>
+<td>0.00457S</td>
+<td>0.00285S</td>
+<td>1686187M/S</td>
+</tr>
+</tbody>
+</table>
+<p>对比发现,除了最大暂停时间外,G1全面不敌ParNew,尤其是平均暂停时间和GC性能两项,几乎相差一倍</p>
+<h3 id="日志分析"><a href="#日志分析" class="headerlink" title="日志分析"></a>日志分析</h3><p>截取一段G1的日志</p>
+<figure class="highlight xml"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br></pre></td><td class="code"><pre><span class="line">2019-07-24T11:10:44.582+0800: 641.897: [GC pause (G1 Evacuation Pause) (young), 0.0028870 secs]</span><br><span class="line">   [Parallel Time: 0.8 ms, GC Workers: 8]</span><br><span class="line">      [GC Worker Start (ms): Min: 641897.0, Avg: 641897.3, Max: 641897.7, Diff: 0.6]</span><br><span class="line">      [Ext Root Scanning (ms): Min: 0.0, Avg: 0.1, Max: 0.3, Diff: 0.3, Sum: 1.1]</span><br><span class="line">      [Update RS (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0, Sum: 0.0]</span><br><span class="line">         [Processed Buffers: Min: 0, Avg: 0.3, Max: 1, Diff: 1, Sum: 2]</span><br><span class="line">      [Scan RS (ms): Min: 0.0, Avg: 0.2, Max: 0.3, Diff: 0.2, Sum: 1.4]</span><br><span class="line">      [Code Root Scanning (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0, Sum: 0.0]</span><br><span class="line">      [Object Copy (ms): Min: 0.0, Avg: 0.0, Max: 0.0, Diff: 0.0, Sum: 0.0]</span><br><span class="line">      [Termination (ms): Min: 0.0, Avg: 0.1, Max: 0.1, Diff: 0.1, Sum: 0.5]</span><br><span class="line">         [Termination Attempts: Min: 1, Avg: 1.0, Max: 1, Diff: 0, Sum: 8]</span><br><span class="line">      [GC Worker Other (ms): Min: 0.0, Avg: 0.0, Max: 0.1, Diff: 0.1, Sum: 0.2]</span><br><span class="line">      [GC Worker Total (ms): Min: 0.0, Avg: 0.4, Max: 0.7, Diff: 0.6, Sum: 3.2]</span><br><span class="line">      [GC Worker End (ms): Min: 641897.7, Avg: 641897.7, Max: 641897.7, Diff: 0.0]</span><br><span class="line">   [Code Root Fixup: 0.0 ms]</span><br><span class="line">   [Code Root Purge: 0.0 ms]</span><br><span class="line">   [Clear CT: 0.8 ms]</span><br><span class="line">   [Other: 1.2 ms]</span><br><span class="line">      [Choose CSet: 0.0 ms]</span><br><span class="line">      [Ref Proc: 0.1 ms]</span><br><span class="line">      [Ref Enq: 0.0 ms]</span><br><span class="line">      [Redirty Cards: 0.1 ms]</span><br><span class="line">      [Humongous Register: 0.2 ms]</span><br><span class="line">      [Humongous Reclaim: 0.0 ms]</span><br><span class="line">      [Free CSet: 0.6 ms]</span><br><span class="line">   [Eden: 4908.0M(4908.0M)-&gt;0.0B(4908.0M) Survivors: 4096.0K-&gt;4096.0K Heap: 4909.1M(8192.0M)-&gt;1167.5K(8192.0M)]</span><br></pre></td></tr></table></figure>
+<p>总的暂停时间是2.88毫秒,RootSanning(扫描根集合)总共花费1.1ms,这一步是STW的,最终的Others是清理重置CardTable的标记位,处理弱引用,选择&amp;清理CSet,这些步骤总共耗时1.2ms,这两个STW的步骤 加起来耗时2.3毫秒  </p>
+<p>相比较之下,ParNew少了对于CSet/CartTable的处理步骤,时间几乎是G1的一半,而两者的活对象拷贝时间相差无几(活对象极少),所以GC性能,ParNew是G1的两倍。  </p>
+<h1 id="OldGC对比"><a href="#OldGC对比" class="headerlink" title="OldGC对比"></a>OldGC对比</h1><p>CMS对比G1</p>
+<h2 id="测试代码-1"><a href="#测试代码-1" class="headerlink" title="测试代码"></a>测试代码</h2><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">PrematurePromotion</span> </span>&#123;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">final</span> <span class="keyword">int</span> MAX_CHUNKS = Integer.getInteger(<span class="string">"max.chunks"</span>, <span class="number">7_000_000</span>);</span><br><span class="line">    <span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">final</span> Collection&lt;<span class="keyword">byte</span>[]&gt; accumulatedChunks = <span class="keyword">new</span> ArrayList&lt;&gt;();</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">onNewChunk</span><span class="params">(<span class="keyword">byte</span>[] bytes)</span> </span>&#123;</span><br><span class="line">        accumulatedChunks.add(bytes);</span><br><span class="line">        <span class="comment">// 如果大于指定的数目</span></span><br><span class="line">        <span class="keyword">if</span> (accumulatedChunks.size() &gt; MAX_CHUNKS) &#123;</span><br><span class="line">            <span class="comment">// 取出静态成员变量中的所有值，两两异或，最后赋值给sink变量，只是简单地模拟一下业务间的运算</span></span><br><span class="line">            processBatch(accumulatedChunks);</span><br><span class="line">            <span class="comment">// 清空</span></span><br><span class="line">            accumulatedChunks.clear();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span><span class="params">(String[] args)</span> </span>&#123;</span><br><span class="line">        <span class="keyword">long</span> loop = MAX_CHUNKS &lt;&lt; <span class="number">2</span>;</span><br><span class="line">        <span class="comment">// 完成有限的工作</span></span><br><span class="line">        <span class="keyword">while</span> (loop &gt; <span class="number">0</span>) &#123;</span><br><span class="line">            onNewChunk(produceChunk());</span><br><span class="line">            loop--;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">byte</span>[] produceChunk() &#123;</span><br><span class="line">        <span class="comment">// 每次生成1k大小的数组</span></span><br><span class="line">        <span class="keyword">byte</span>[] bytes = <span class="keyword">new</span> <span class="keyword">byte</span>[(<span class="number">1</span> &lt;&lt; <span class="number">10</span>)];</span><br><span class="line"></span><br><span class="line">        <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; bytes.length; i++) &#123;</span><br><span class="line">            bytes[i] = (<span class="keyword">byte</span>) (Math.random() * Byte.MAX_VALUE);</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        <span class="keyword">return</span> bytes;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">/** * 仅是简单地保存两两异或的结果 */</span></span><br><span class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">volatile</span> <span class="keyword">byte</span> SINK;</span><br><span class="line"></span><br><span class="line">    <span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">processBatch</span><span class="params">(Collection&lt;<span class="keyword">byte</span>[]&gt; bytes)</span> </span>&#123;</span><br><span class="line">        <span class="keyword">byte</span> result = <span class="number">0</span>;</span><br><span class="line">        <span class="keyword">for</span> (<span class="keyword">byte</span>[] chunk : bytes) &#123;</span><br><span class="line">            <span class="keyword">for</span> (<span class="keyword">byte</span> b : chunk) &#123;</span><br><span class="line">                result ^= b;</span><br><span class="line">            &#125;</span><br><span class="line">        &#125;</span><br><span class="line">        SINK = result;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h2 id="CMS性能"><a href="#CMS性能" class="headerlink" title="CMS性能"></a>CMS性能</h2>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/07/25/GC云调优/" data-tooltip="GC云调优" aria-label="上一篇: GC云调优">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/07/14/文件系统/" data-tooltip="文件系统" aria-label="下一篇: 文件系统">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/07/25/GC云调优/" data-tooltip="GC云调优" aria-label="上一篇: GC云调优">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/07/14/文件系统/" data-tooltip="文件系统" aria-label="下一篇: 文件系统">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
