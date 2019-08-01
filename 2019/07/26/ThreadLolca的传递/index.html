@@ -1,0 +1,403 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title>ThreadLocal的传递 - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"  \n\n前言写这篇文章是前段时间看到一篇博客,其中提到了这样一个需求\n\n同一个接口,为了兼容不同的版本,需要在调用接口时提供版本信息,后续方法根据版本的不同进行不同的解析,由于方法嵌套太多,使用传参的方法并不优雅,所以将版本信息放到ThreadLocal中,由绑定了ThreadLocal的主线程完成所有的方法调用,但是后期采用了线程池的方式,这就导致绑定到主线程ThreadLocal的版本信息无法传递给线程池中的线程,所以需要有一个能够支持在线程间传递的ThreadLocal。\n\n自己之前在实验室写对象存储的调用信息监控时,需要在多个方法间记录调用信息(参数,时间,是否成功,失败原因),当时采用的办法就是传参。。。。。。几乎所有的方法都被我在函数中加了一个表示调用信息记录的结构体参数,函数看起来非常丑,后来才知道go中的context可以做到这个事情(有点像Java的ThreadLocal)。当时就想到,现在(可能是之前?)比较火的微服务的调用链监控,里头可能会有大量的异步调用,那么如何优雅的将那些异步调用和traceID关联起来呢？  \n当时只是有这个疑惑,并没有去探究这个问题的解决办法,现在看到这个博客中的类似需求,决定研究一下。\nInheritableThreadLocal之前在分析ThreadLocal的时候,知道其是通过与Thread的ThreadLocalMap实现的”绑定变量到线程”,其实Thread类内还有一个ThreadLocalMap变量\n12345/** InheritableThreadLocal values pertaining to this thread. This map is* maintained by the InheritableThreadLocal class.*/ThreadLocal.ThreadLocalMap inheritableThreadLocals = null;\nInheritablThreadLocal与inheritableThreadLolcals组成了JDK自己构造的”可以传递的ThreadLocla”,InheritableThreadLocal的实现非常简单,他继承了ThreadLocal,重写了getMap方法,返回的是inheritableThreadLocals变量,createMap也是为相应变量赋值,其他逻辑全部与ThreadLocal一样。  \n但是他与ThreadLocal最大的不同在于,他保存的值可以在父子线程之间传递,传递的逻辑在new Thread的过程中,Thread的实例化最终会调用init方法,其中有这么一段逻辑  \n1234Thread parent = currentThread();if (inheritThreadLocals &amp;&amp; parent.inheritableThreadLocals != null)\tthis.inheritableThreadLocals =\t\tThreadLocal.createInheritedMap(parent.inheritableThreadLocals);\ninheritThreadLocals是一个默认为true的boolean量,createInheriedMap最终会实例化一个ThreadLocalMap\n1234567891011121314151617181920212223private ThreadLocalMap(ThreadLocalMap parentMap) &#123;          Entry[] parentTable = parentMap.table;          int len = parentTable.length;          setThreshold(len);          table = new Entry[len];          for (int j = 0; j &lt; len; j++) &#123;              Entry e = parentTable[j];              if (e != null) &#123;                  @SuppressWarnings(\"unchecked\")                  ThreadLocal&lt;Object&gt; key = (ThreadLocal&lt;Object&gt;) e.get();                  if (key != null) &#123;                      Object value = key.childValue(e.value);                      Entry c = new Entry(key, value);                      int h = key.threadLocalHashCode &amp; (len - 1);                      while (table[h] != null)                          h = nextIndex(h, len);                      table[h] = c;                      size++;                  &#125;              &#125;          &#125;      &#125;\n可以看到,在这一步中,进行了inheritThreadLocals变量的拷贝(传递),要注意的是父子线程的value指向的是一个对象\nTTL虽然JDK提供了InheritThreadLocals类,但是他的作用范围比较有限,仅限于父子线程的变量传递,并不适用使用线程池的情况。\n阿里开源的TTL库就是为了解决这个问题\n下面是一个简单地Demo,run方法会打印出parent value(单就这个例子来说InheritableThreadLocal一样可以达到这个效果)\n1234567891011private static TransmittableThreadLocal&lt;String&gt; threadLocal = new TransmittableThreadLocal&lt;String&gt;();public static void main(String[] args) &#123;    ExecutorService threadPool = Executors.newFixedThreadPool(1);    threadLocal.set(\"parent value\");    threadPool.submit(TtlRunnable.get(new Runnable() &#123;        @Override        public void run() &#123;            System.out.println(threadLocal.get());        &#125;    &#125;));&#125;\nTransmittableThreadLocal该类是TTL的核心类,继承自InheritableThreadLocal,其重写了get set remove方法\n该类中有个核心变量holder,\n123456789101112private static InheritableThreadLocal&lt;Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt; holder =        new InheritableThreadLocal&lt;Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt;() &#123;            @Override            protected Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; initialValue() &#123;                return new WeakHashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;();            &#125;            @Override            protected Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; childValue(Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; parentValue) &#123;                return new WeakHashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;(parentValue);            &#125;        &#125;;\n他是一个InheritableThreadLocal类型的变量,其存储的是一个Map,这个Map的key是TransmittableThreadLocal类型,key存储的value和map的value是一个类型(这可真是太绕了),并且其重写了inititalValue和childValue方法,返回的是weakHashMap实例。\nset123456public final void set(T value) &#123;    super.set(value);    // may set null to remove value    if (null == value) removeValue();    else addValue();&#125;\nsuper.set调用到了threadLocal的set,再调用getMap获取Map以存放value,由于TransmittableThreadLocal继承自InheritableThreadLocal,所以getMap返回的是当前线程的inheritableThreadLocals变量,初始化一个ThreadLocalMap实例并赋值给inheritableThreadLocals,我们set的value最终是存储到了当前线程的inheritableThreadLocals中,接下来的重点在addValue方法\n12345private void addValue() &#123;    if (!holder.get().containsKey(this)) &#123;        holder.get().put(this, null); // WeakHashMap supports null value.    &#125;&#125;\nholder.get最终调用threadLocal.get而其中的getMap返回的就是之前存储”parent value”的inheritableThreadLocals\n12345678910111213public T get() &#123;    Thread t = Thread.currentThread();    ThreadLocalMap map = getMap(t);    if (map != null) &#123;        ThreadLocalMap.Entry e = map.getEntry(this);        if (e != null) &#123;            @SuppressWarnings(\"unchecked\")            T result = (T)e.value;            return result;        &#125;    &#125;    return setInitialValue();&#125;\n但是这个map中并没有以holder做key的entry,所以会调用setInitialValue方法\n12345678910private T setInitialValue() &#123;    T value = initialValue();    Thread t = Thread.currentThread();    ThreadLocalMap map = getMap(t);    if (map != null)        map.set(this, value);    else        createMap(t, value);    return value;&#125;\nholder重写了initalValue方法,返回的是一个WeakHashMap实例,该方法最终在inheritableThreadLocals这个map中put了一个key为holder,value为weakHashmap的entry\n继续看addValue方法\n123if (!holder.get().containsKey(this)) &#123;\tholder.get().put(this, null); // WeakHashMap supports null value.&#125;\nholder.get返回的就是刚才实例化的weakHashMap,contains现在自然是返回false的,随后,再将this(TransmittableThreadLocal)put到这个map中\n整个TransmittableThreadLocal.set逻辑结束\n现在 从以下几个问题来回顾一下整个set的关键点\nset的value在哪里?TransmittableThreadLocal继承自InheritableThreadLocal,其set的value存储在了当前线程的inheritableThreadLocals变量中\nholder存了什么？这个问题我们从ttl.set开始梳理\nholder.get方法的最终结果就是在当前线程的inheritableThreadLocals中存储了个(holder,weakHashMap)对,而weakHashmap中存储了TransmittableThreadLocal\nttl.set - &gt; currentThread.inheritableThreadLocals.put(ttl , value)\nholder.get - &gt; 触发 currentThread.inheritableThreadLocals.set( holder , weahHashMap) - &gt; 最终 返回weakHashMap\nweakHashMap.put -&gt; (TransmittableThreadLocal实例 , null)\n我们可以看到任意一个线程通过holder.get都可以获取到独属于自己的weakHashMap,遍历这个Map就可以获取到该线程使用的所有TransmittableThreadLocal,再依次调用get方法最终就可以得到当前线程通过TransmittableThreadLocal.set的所有本地变量\nTtlRunnable我们在线程池使用中,submit的一般是Runnable或者Callable,为了支持ThreadLocal传递,Ttl也定义了其两个子类,这里分析TtlRunnable,其中的静态get方法用于根据传入的Runnable返回一个包装好的TtlRunnable\nreleaseTtlValueReferenceAfterRun默认为false\n12345private TtlRunnable(@NonNull Runnable runnable, boolean releaseTtlValueReferenceAfterRun) &#123;    this.capturedRef = new AtomicReference&lt;Object&gt;(capture());    this.runnable = runnable;    this.releaseTtlValueReferenceAfterRun = releaseTtlValueReferenceAfterRun;&#125;\ncapture该方法比较简单\n1234567public static Object capture() &#123;    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; captured = new HashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;();    for (TransmittableThreadLocal&lt;?&gt; threadLocal : holder.get().keySet()) &#123;        captured.put(threadLocal, threadLocal.copyValue());    &#125;    return captured;&#125;\n通过我们上面对holder的分析可以知道,这里的for循环就是在拷贝当前线程的所有本地变量(copyValue内部调用了get),对于本例就是”parent value”这个string,最终当前线程的所有本地变量都被捕获到并且存在了TtlRunnable的capturedRef变量中以便在后面由线程池中线程读取使用        \nrunTtlRunnable的run方法是ThreadLocal传递的核心之一\n12345678910111213public void run() &#123;    Object captured = capturedRef.get();    if (captured == null || releaseTtlValueReferenceAfterRun &amp;&amp; !capturedRef.compareAndSet(captured, null)) &#123;        throw new IllegalStateException(&quot;TTL value reference is released after run!&quot;);    &#125;    Object backup = replay(captured);    try &#123;        runnable.run();    &#125; finally &#123;        restore(backup);    &#125;&#125;\nreplay这个方法的的主要作用就是临时保存当前子线程的本地变量用于runnable执行完以后的恢复,同时给当前线程本地变量赋新值(上面捕获(capture)到的变量)\n12345678910111213141516171819202122232425262728public static Object replay(@NonNull Object captured) &#123;    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; capturedMap = (Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;) captured;    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; backup = new HashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;();    for (Iterator&lt;? extends Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt; iterator = holder.get().entrySet().iterator();         iterator.hasNext(); ) &#123;        Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; next = iterator.next();        TransmittableThreadLocal&lt;?&gt; threadLocal = next.getKey();        // backup        backup.put(threadLocal, threadLocal.get());        // clear the TTL values that is not in captured        // avoid the extra TTL values after replay when run task        if (!capturedMap.containsKey(threadLocal)) &#123;            iterator.remove();            threadLocal.superRemove();        &#125;    &#125;    // set TTL values to captured    setTtlValuesTo(capturedMap);    // call beforeExecute callback    doExecuteCallback(true);    return backup;&#125;\n同之前分析的一样,for循环取到当前子线程所有的变量(称作原生变量)并保存在backup中用于后续的恢复,setTtlValuesTo就是遍历Map,调用set进行将一个个value存到当前线程的inheritableThreadLocals\n至此,我们已经完成了ThreadLocal变量的跨线程传递\n这里要额外关注的点是for循环中的if语句\n代码比较简单,如果在之前线程中捕获的变量不包含该原生变量,那么就要从线程的当前本地变量中移除。\n为什么清除上下文这是为了保证runnable执行时上下文的正确性,在使用线程池时,我们所有的业务逻辑都封装在了Runnable中,任务的执行完全依赖于Runnable,我们要传递的所有TransmittableThreadLocal中的变量,已经在构建时被TtlRunnable自动捕获了,如果这里不进行上下文的清除,那么就可能获取到我们没有传递的值(该工作线程运行之前的runnable时的遗留值),可能就会出现运行的逻辑错误。\nrestoreTtlRunnable的run方法中,finally调用了restore方法,传入了之前备份的原生变量\n123456789101112131415161718192021public static void restore(@NonNull Object backup) &#123;    @SuppressWarnings(\"unchecked\")    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; backupMap = (Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;) backup;    doExecuteCallback(false);    for (Iterator&lt;? extends Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt; iterator = holder.get().entrySet().iterator();         iterator.hasNext(); ) &#123;        Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; next = iterator.next();        TransmittableThreadLocal&lt;?&gt; threadLocal = next.getKey();        // clear the TTL values that is not in backup        // avoid the extra TTL values after restore        if (!backupMap.containsKey(threadLocal)) &#123;            iterator.remove();            threadLocal.superRemove();        &#125;    &#125;    // restore TTL values    setTtlValuesTo(backupMap);&#125;\n同样是一个for循环,其中的if语句判断,如果原生变量不包含从调用线程捕获来的变量(也可能是run方法产生的变量),那么就要将其删除,也即恢复调用前的变量状态\n参考线程之间传递ThreadLocal对象\ntransmittable-thread-local\nTransmittableThreadLocal的使用及原理解析","dateCreated":"2019-07-26T10:24:25+08:00","dateModified":"2019-08-01T23:29:29+08:00","datePublished":"2019-07-26T10:24:25+08:00","description":"ThreadLocal的传递","headline":"ThreadLocal的传递","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/07/26/ThreadLolca的传递/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/07/26/ThreadLolca的传递/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="ThreadLocal的传递">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="ThreadLocal的传递">
+<meta property="og:url" content="http://yoursite.com/2019/07/26/ThreadLolca的传递/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="ThreadLocal的传递">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:updated_time" content="2019-08-01T15:29:29.679Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="ThreadLocal的传递">
+<meta name="twitter:description" content="ThreadLocal的传递">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
+    
+        <h1 class="post-title">
+            ThreadLocal的传递
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-07-26T10:24:25+08:00">
+	
+		    7月 26, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <!-- excerpt -->  <p></p>
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#前言"><span class="toc-text">前言</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#InheritableThreadLocal"><span class="toc-text">InheritableThreadLocal</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#TTL"><span class="toc-text">TTL</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#TransmittableThreadLocal"><span class="toc-text">TransmittableThreadLocal</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#set"><span class="toc-text">set</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#set的value在哪里"><span class="toc-text">set的value在哪里?</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#holder存了什么？"><span class="toc-text">holder存了什么？</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#TtlRunnable"><span class="toc-text">TtlRunnable</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#capture"><span class="toc-text">capture</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#run"><span class="toc-text">run</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#replay"><span class="toc-text">replay</span></a><ol class="toc-child"><li class="toc-item toc-level-5"><a class="toc-link" href="#为什么清除上下文"><span class="toc-text">为什么清除上下文</span></a></li></ol></li><li class="toc-item toc-level-4"><a class="toc-link" href="#restore"><span class="toc-text">restore</span></a></li></ol></li></ol></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#参考"><span class="toc-text">参考</span></a></li></ol>
+<h1 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h1><p>写这篇文章是前段时间看到一篇博客,其中提到了这样一个需求</p>
+<blockquote>
+<p>同一个接口,为了兼容不同的版本,需要在调用接口时提供版本信息,后续方法根据版本的不同进行不同的解析,由于方法嵌套太多,使用传参的方法并不优雅,所以将版本信息放到ThreadLocal中,由绑定了ThreadLocal的主线程完成所有的方法调用,但是后期采用了线程池的方式,这就导致绑定到主线程ThreadLocal的版本信息无法传递给线程池中的线程,所以需要有一个能够支持在线程间传递的ThreadLocal。</p>
+</blockquote>
+<p>自己之前在实验室写对象存储的调用信息监控时,需要在多个方法间记录调用信息(参数,时间,是否成功,失败原因),当时采用的办法就是传参。。。。。。几乎所有的方法都被我在函数中加了一个表示调用信息记录的结构体参数,函数看起来非常丑,后来才知道go中的context可以做到这个事情(有点像Java的ThreadLocal)。当时就想到,现在(可能是之前?)比较火的微服务的调用链监控,里头可能会有大量的异步调用,那么如何优雅的将那些异步调用和traceID关联起来呢？  </p>
+<p>当时只是有这个疑惑,并没有去探究这个问题的解决办法,现在看到这个博客中的类似需求,决定研究一下。</p>
+<h1 id="InheritableThreadLocal"><a href="#InheritableThreadLocal" class="headerlink" title="InheritableThreadLocal"></a>InheritableThreadLocal</h1><p>之前在分析ThreadLocal的时候,知道其是通过与Thread的ThreadLocalMap实现的”绑定变量到线程”,其实Thread类内还有一个ThreadLocalMap变量</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">/*</span></span><br><span class="line"><span class="comment">* InheritableThreadLocal values pertaining to this thread. This map is</span></span><br><span class="line"><span class="comment">* maintained by the InheritableThreadLocal class.</span></span><br><span class="line"><span class="comment">*/</span></span><br><span class="line">ThreadLocal.ThreadLocalMap inheritableThreadLocals = <span class="keyword">null</span>;</span><br></pre></td></tr></table></figure>
+<p>InheritablThreadLocal与inheritableThreadLolcals组成了JDK自己构造的”可以传递的ThreadLocla”,InheritableThreadLocal的实现非常简单,他继承了ThreadLocal,重写了getMap方法,返回的是inheritableThreadLocals变量,createMap也是为相应变量赋值,其他逻辑全部与ThreadLocal一样。  </p>
+<p>但是他与ThreadLocal最大的不同在于,他保存的值可以在父子线程之间传递,传递的逻辑在new Thread的过程中,Thread的实例化最终会调用init方法,其中有这么一段逻辑  </p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">Thread parent = currentThread();</span><br><span class="line"><span class="keyword">if</span> (inheritThreadLocals &amp;&amp; parent.inheritableThreadLocals != <span class="keyword">null</span>)</span><br><span class="line">	<span class="keyword">this</span>.inheritableThreadLocals =</span><br><span class="line">		ThreadLocal.createInheritedMap(parent.inheritableThreadLocals);</span><br></pre></td></tr></table></figure>
+<p>inheritThreadLocals是一个默认为true的boolean量,createInheriedMap最终会实例化一个ThreadLocalMap</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="title">ThreadLocalMap</span><span class="params">(ThreadLocalMap parentMap)</span> </span>&#123;</span><br><span class="line">          Entry[] parentTable = parentMap.table;</span><br><span class="line">          <span class="keyword">int</span> len = parentTable.length;</span><br><span class="line">          setThreshold(len);</span><br><span class="line">          table = <span class="keyword">new</span> Entry[len];</span><br><span class="line"></span><br><span class="line">          <span class="keyword">for</span> (<span class="keyword">int</span> j = <span class="number">0</span>; j &lt; len; j++) &#123;</span><br><span class="line">              Entry e = parentTable[j];</span><br><span class="line">              <span class="keyword">if</span> (e != <span class="keyword">null</span>) &#123;</span><br><span class="line">                  <span class="meta">@SuppressWarnings</span>(<span class="string">"unchecked"</span>)</span><br><span class="line">                  ThreadLocal&lt;Object&gt; key = (ThreadLocal&lt;Object&gt;) e.get();</span><br><span class="line">                  <span class="keyword">if</span> (key != <span class="keyword">null</span>) &#123;</span><br><span class="line">                      Object value = key.childValue(e.value);</span><br><span class="line">                      Entry c = <span class="keyword">new</span> Entry(key, value);</span><br><span class="line">                      <span class="keyword">int</span> h = key.threadLocalHashCode &amp; (len - <span class="number">1</span>);</span><br><span class="line">                      <span class="keyword">while</span> (table[h] != <span class="keyword">null</span>)</span><br><span class="line">                          h = nextIndex(h, len);</span><br><span class="line">                      table[h] = c;</span><br><span class="line">                      size++;</span><br><span class="line">                  &#125;</span><br><span class="line">              &#125;</span><br><span class="line">          &#125;</span><br><span class="line">      &#125;</span><br></pre></td></tr></table></figure>
+<p>可以看到,在这一步中,进行了inheritThreadLocals变量的拷贝(传递),要注意的是父子线程的value指向的是一个对象</p>
+<h1 id="TTL"><a href="#TTL" class="headerlink" title="TTL"></a>TTL</h1><p>虽然JDK提供了InheritThreadLocals类,但是他的作用范围比较有限,仅限于父子线程的变量传递,并不适用使用线程池的情况。</p>
+<p>阿里开源的<a href="https://github.com/alibaba/transmittable-thread-local" target="_blank" rel="noopener">TTL</a>库就是为了解决这个问题</p>
+<p>下面是一个简单地Demo,run方法会打印出parent value(单就这个例子来说InheritableThreadLocal一样可以达到这个效果)</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">private</span> <span class="keyword">static</span> TransmittableThreadLocal&lt;String&gt; threadLocal = <span class="keyword">new</span> TransmittableThreadLocal&lt;String&gt;();</span><br><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span><span class="params">(String[] args)</span> </span>&#123;</span><br><span class="line">    ExecutorService threadPool = Executors.newFixedThreadPool(<span class="number">1</span>);</span><br><span class="line">    threadLocal.set(<span class="string">"parent value"</span>);</span><br><span class="line">    threadPool.submit(TtlRunnable.get(<span class="keyword">new</span> Runnable() &#123;</span><br><span class="line">        <span class="meta">@Override</span></span><br><span class="line">        <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">run</span><span class="params">()</span> </span>&#123;</span><br><span class="line">            System.out.println(threadLocal.get());</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h2 id="TransmittableThreadLocal"><a href="#TransmittableThreadLocal" class="headerlink" title="TransmittableThreadLocal"></a>TransmittableThreadLocal</h2><p>该类是TTL的核心类,继承自InheritableThreadLocal,其重写了get set remove方法</p>
+<p>该类中有个核心变量holder,</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">private</span> <span class="keyword">static</span> InheritableThreadLocal&lt;Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt; holder =</span><br><span class="line">        <span class="keyword">new</span> InheritableThreadLocal&lt;Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt;() &#123;</span><br><span class="line">            <span class="meta">@Override</span></span><br><span class="line">            <span class="keyword">protected</span> Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; initialValue() &#123;</span><br><span class="line">                <span class="keyword">return</span> <span class="keyword">new</span> WeakHashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;();</span><br><span class="line">            &#125;</span><br><span class="line"></span><br><span class="line">            <span class="meta">@Override</span></span><br><span class="line">            <span class="keyword">protected</span> Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; childValue(Map&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; parentValue) &#123;</span><br><span class="line">                <span class="keyword">return</span> <span class="keyword">new</span> WeakHashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;(parentValue);</span><br><span class="line">            &#125;</span><br><span class="line">        &#125;;</span><br></pre></td></tr></table></figure>
+<p>他是一个InheritableThreadLocal类型的变量,其存储的是一个Map,这个Map的key是TransmittableThreadLocal类型,key存储的value和map的value是一个类型(这可真是太绕了),并且其重写了inititalValue和childValue方法,返回的是weakHashMap实例。</p>
+<h2 id="set"><a href="#set" class="headerlink" title="set"></a>set</h2><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">final</span> <span class="keyword">void</span> <span class="title">set</span><span class="params">(T value)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">super</span>.set(value);</span><br><span class="line">    <span class="comment">// may set null to remove value</span></span><br><span class="line">    <span class="keyword">if</span> (<span class="keyword">null</span> == value) removeValue();</span><br><span class="line">    <span class="keyword">else</span> addValue();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>super.set调用到了threadLocal的set,再调用getMap获取Map以存放value,由于TransmittableThreadLocal继承自InheritableThreadLocal,所以getMap返回的是当前线程的inheritableThreadLocals变量,初始化一个ThreadLocalMap实例并赋值给inheritableThreadLocals,我们set的value最终是存储到了当前线程的inheritableThreadLocals中,接下来的重点在addValue方法</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">void</span> <span class="title">addValue</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    <span class="keyword">if</span> (!holder.get().containsKey(<span class="keyword">this</span>)) &#123;</span><br><span class="line">        holder.get().put(<span class="keyword">this</span>, <span class="keyword">null</span>); <span class="comment">// WeakHashMap supports null value.</span></span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>holder.get最终调用threadLocal.get而其中的getMap返回的就是之前存储”parent value”的inheritableThreadLocals</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> T <span class="title">get</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    Thread t = Thread.currentThread();</span><br><span class="line">    ThreadLocalMap map = getMap(t);</span><br><span class="line">    <span class="keyword">if</span> (map != <span class="keyword">null</span>) &#123;</span><br><span class="line">        ThreadLocalMap.Entry e = map.getEntry(<span class="keyword">this</span>);</span><br><span class="line">        <span class="keyword">if</span> (e != <span class="keyword">null</span>) &#123;</span><br><span class="line">            <span class="meta">@SuppressWarnings</span>(<span class="string">"unchecked"</span>)</span><br><span class="line">            T result = (T)e.value;</span><br><span class="line">            <span class="keyword">return</span> result;</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> setInitialValue();</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>但是这个map中并没有以holder做key的entry,所以会调用setInitialValue方法</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> T <span class="title">setInitialValue</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    T value = initialValue();</span><br><span class="line">    Thread t = Thread.currentThread();</span><br><span class="line">    ThreadLocalMap map = getMap(t);</span><br><span class="line">    <span class="keyword">if</span> (map != <span class="keyword">null</span>)</span><br><span class="line">        map.set(<span class="keyword">this</span>, value);</span><br><span class="line">    <span class="keyword">else</span></span><br><span class="line">        createMap(t, value);</span><br><span class="line">    <span class="keyword">return</span> value;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>holder重写了initalValue方法,返回的是一个WeakHashMap实例,该方法最终在inheritableThreadLocals这个map中put了一个key为holder,value为weakHashmap的entry</p>
+<p>继续看addValue方法</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">if</span> (!holder.get().containsKey(<span class="keyword">this</span>)) &#123;</span><br><span class="line">	holder.get().put(<span class="keyword">this</span>, <span class="keyword">null</span>); <span class="comment">// WeakHashMap supports null value.</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>holder.get返回的就是刚才实例化的weakHashMap,contains现在自然是返回false的,随后,再将this(TransmittableThreadLocal)put到这个map中</p>
+<p>整个TransmittableThreadLocal.set逻辑结束</p>
+<p>现在 从以下几个问题来回顾一下整个set的关键点</p>
+<h3 id="set的value在哪里"><a href="#set的value在哪里" class="headerlink" title="set的value在哪里?"></a>set的value在哪里?</h3><p>TransmittableThreadLocal继承自InheritableThreadLocal,其set的value存储在了当前线程的inheritableThreadLocals变量中</p>
+<h3 id="holder存了什么？"><a href="#holder存了什么？" class="headerlink" title="holder存了什么？"></a>holder存了什么？</h3><p>这个问题我们从ttl.set开始梳理</p>
+<p>holder.get方法的最终结果就是在当前线程的inheritableThreadLocals中存储了个(holder,weakHashMap)对,而weakHashmap中存储了TransmittableThreadLocal</p>
+<p>ttl.set - &gt; currentThread.inheritableThreadLocals.put(ttl , value)</p>
+<p>holder.get - &gt; 触发 currentThread.inheritableThreadLocals.set( holder , weahHashMap) - &gt; 最终 返回weakHashMap</p>
+<p>weakHashMap.put -&gt; (TransmittableThreadLocal实例 , null)</p>
+<p>我们可以看到任意一个线程通过holder.get都可以获取到独属于自己的weakHashMap,遍历这个Map就可以获取到该线程使用的所有TransmittableThreadLocal,再依次调用get方法最终就可以得到当前线程通过TransmittableThreadLocal.set的所有本地变量</p>
+<h2 id="TtlRunnable"><a href="#TtlRunnable" class="headerlink" title="TtlRunnable"></a>TtlRunnable</h2><p>我们在线程池使用中,submit的一般是Runnable或者Callable,为了支持ThreadLocal传递,Ttl也定义了其两个子类,这里分析TtlRunnable,其中的静态get方法用于根据传入的Runnable返回一个包装好的TtlRunnable</p>
+<p>releaseTtlValueReferenceAfterRun默认为false</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="title">TtlRunnable</span><span class="params">(@NonNull Runnable runnable, <span class="keyword">boolean</span> releaseTtlValueReferenceAfterRun)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">this</span>.capturedRef = <span class="keyword">new</span> AtomicReference&lt;Object&gt;(capture());</span><br><span class="line">    <span class="keyword">this</span>.runnable = runnable;</span><br><span class="line">    <span class="keyword">this</span>.releaseTtlValueReferenceAfterRun = releaseTtlValueReferenceAfterRun;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h3 id="capture"><a href="#capture" class="headerlink" title="capture"></a>capture</h3><p>该方法比较简单</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> Object <span class="title">capture</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; captured = <span class="keyword">new</span> HashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;();</span><br><span class="line">    <span class="keyword">for</span> (TransmittableThreadLocal&lt;?&gt; threadLocal : holder.get().keySet()) &#123;</span><br><span class="line">        captured.put(threadLocal, threadLocal.copyValue());</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">return</span> captured;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>通过我们上面对holder的分析可以知道,这里的for循环就是在拷贝当前线程的所有本地变量(copyValue内部调用了get),对于本例就是”parent value”这个string,最终当前线程的所有本地变量都被捕获到并且存在了TtlRunnable的capturedRef变量中以便在后面由线程池中线程读取使用        </p>
+<h3 id="run"><a href="#run" class="headerlink" title="run"></a>run</h3><p>TtlRunnable的run方法是ThreadLocal传递的核心之一</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line">public void run() &#123;</span><br><span class="line">    Object captured = capturedRef.get();</span><br><span class="line">    if (captured == null || releaseTtlValueReferenceAfterRun &amp;&amp; !capturedRef.compareAndSet(captured, null)) &#123;</span><br><span class="line">        throw new IllegalStateException(&quot;TTL value reference is released after run!&quot;);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    Object backup = replay(captured);</span><br><span class="line">    try &#123;</span><br><span class="line">        runnable.run();</span><br><span class="line">    &#125; finally &#123;</span><br><span class="line">        restore(backup);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h4 id="replay"><a href="#replay" class="headerlink" title="replay"></a>replay</h4><p>这个方法的的主要作用就是临时保存当前子线程的本地变量用于runnable执行完以后的恢复,同时给当前线程本地变量赋新值(上面捕获(capture)到的变量)</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> Object <span class="title">replay</span><span class="params">(@NonNull Object captured)</span> </span>&#123;</span><br><span class="line">    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; capturedMap = (Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;) captured;</span><br><span class="line">    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; backup = <span class="keyword">new</span> HashMap&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;();</span><br><span class="line"></span><br><span class="line">    <span class="keyword">for</span> (Iterator&lt;? extends Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt; iterator = holder.get().entrySet().iterator();</span><br><span class="line">         iterator.hasNext(); ) &#123;</span><br><span class="line">        Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; next = iterator.next();</span><br><span class="line">        TransmittableThreadLocal&lt;?&gt; threadLocal = next.getKey();</span><br><span class="line"></span><br><span class="line">        <span class="comment">// backup</span></span><br><span class="line">        backup.put(threadLocal, threadLocal.get());</span><br><span class="line"></span><br><span class="line">        <span class="comment">// clear the TTL values that is not in captured</span></span><br><span class="line">        <span class="comment">// avoid the extra TTL values after replay when run task</span></span><br><span class="line">        <span class="keyword">if</span> (!capturedMap.containsKey(threadLocal)) &#123;</span><br><span class="line">            iterator.remove();</span><br><span class="line">            threadLocal.superRemove();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// set TTL values to captured</span></span><br><span class="line">    setTtlValuesTo(capturedMap);</span><br><span class="line"></span><br><span class="line">    <span class="comment">// call beforeExecute callback</span></span><br><span class="line">    doExecuteCallback(<span class="keyword">true</span>);</span><br><span class="line"></span><br><span class="line">    <span class="keyword">return</span> backup;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>同之前分析的一样,for循环取到当前子线程所有的变量(称作原生变量)并保存在backup中用于后续的恢复,setTtlValuesTo就是遍历Map,调用set进行将一个个value存到当前线程的inheritableThreadLocals</p>
+<p>至此,我们已经完成了ThreadLocal变量的跨线程传递</p>
+<p>这里要额外关注的点是for循环中的if语句</p>
+<p>代码比较简单,如果在之前线程中捕获的变量不包含该原生变量,那么就要从线程的当前本地变量中移除。</p>
+<h5 id="为什么清除上下文"><a href="#为什么清除上下文" class="headerlink" title="为什么清除上下文"></a>为什么清除上下文</h5><p>这是为了保证runnable执行时上下文的正确性,在使用线程池时,我们所有的业务逻辑都封装在了Runnable中,任务的执行完全依赖于Runnable,我们要传递的所有TransmittableThreadLocal中的变量,已经在构建时被TtlRunnable自动捕获了,如果这里不进行上下文的清除,那么就可能获取到我们没有传递的值(该工作线程运行之前的runnable时的遗留值),可能就会出现运行的逻辑错误。</p>
+<h4 id="restore"><a href="#restore" class="headerlink" title="restore"></a>restore</h4><p>TtlRunnable的run方法中,finally调用了restore方法,传入了之前备份的原生变量</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">restore</span><span class="params">(@NonNull Object backup)</span> </span>&#123;</span><br><span class="line">    <span class="meta">@SuppressWarnings</span>(<span class="string">"unchecked"</span>)</span><br><span class="line">    Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt; backupMap = (Map&lt;TransmittableThreadLocal&lt;?&gt;, Object&gt;) backup;</span><br><span class="line">    doExecuteCallback(<span class="keyword">false</span>);</span><br><span class="line"></span><br><span class="line">    <span class="keyword">for</span> (Iterator&lt;? extends Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt;&gt; iterator = holder.get().entrySet().iterator();</span><br><span class="line">         iterator.hasNext(); ) &#123;</span><br><span class="line">        Map.Entry&lt;TransmittableThreadLocal&lt;?&gt;, ?&gt; next = iterator.next();</span><br><span class="line">        TransmittableThreadLocal&lt;?&gt; threadLocal = next.getKey();</span><br><span class="line"></span><br><span class="line">        <span class="comment">// clear the TTL values that is not in backup</span></span><br><span class="line">        <span class="comment">// avoid the extra TTL values after restore</span></span><br><span class="line">        <span class="keyword">if</span> (!backupMap.containsKey(threadLocal)) &#123;</span><br><span class="line">            iterator.remove();</span><br><span class="line">            threadLocal.superRemove();</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// restore TTL values</span></span><br><span class="line">    setTtlValuesTo(backupMap);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>同样是一个for循环,其中的if语句判断,如果原生变量不包含从调用线程捕获来的变量(也可能是run方法产生的变量),那么就要将其删除,也即恢复调用前的变量状态</p>
+<h1 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h1><p><a href="https://ylgrgyq.github.io/2017/09/25/transmittable-thread-local/" target="_blank" rel="noopener">线程之间传递ThreadLocal对象</a></p>
+<p><a href="https://github.com/alibaba/transmittable-thread-local" target="_blank" rel="noopener">transmittable-thread-local</a></p>
+<p><a href="https://www.cnblogs.com/hama1993/p/10409740.html" target="_blank" rel="noopener">TransmittableThreadLocal的使用及原理解析</a></p>
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/07/25/GC云调优/" data-tooltip="GC云调优" aria-label="下一篇: GC云调优">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/07/25/GC云调优/" data-tooltip="GC云调优" aria-label="下一篇: GC云调优">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
