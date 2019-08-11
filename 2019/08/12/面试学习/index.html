@@ -1,0 +1,452 @@
+
+<!DOCTYPE html>
+<html lang="zh-cn">
+    
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="generator" content="一条咸鱼">
+    <title> - 一条咸鱼</title>
+    <meta name="author" content="一条咸鱼">
+    
+    
+        <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
+    
+    
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"分布式锁Redis实现有问题的实现基于故障切换带超时的KV最简单的实现就是setnx,当K不存在的时候才set相应的value,为了防止客户端挂掉而没有delete相应K以释放锁,set要带超时时间,同时为了防止出现”客户端A拿到锁超时时间内没有释放锁,锁自动释放被客户端B获取,A处理完任务后调用delete却释放了客户端B正在使用的锁”的情况出现,可以使用lua脚本(保证get 判断 del三个操作为一个原子操作)在delete进行判断”只有K存在且其对应的V是我期待的V时才删除这个K”\n这样在setnx上锁的时候V就可以设置成随机值\n但是单master的redis可用性太低,于是引用slave,又由于redis的主从复制是异步的,客户端A向master set了KV 随后master倒掉 slave变成新的master,但之前的KV还没有来得及同步过来,所以客户端B同样可以set KV 这就出现了同一个锁被多个客户端持有的现象\n同时超时时间的设置并不好确定,太短了 任务可能没执行完锁就被释放了,这要求程序时不时的去修改超时时间以续约锁,如果太长了 程序效率又很低下\nRedLock为提高可用性,需要部署多个(N)master节点(这些节点之间并没有什么关系),客户端获取锁的操作如下\n\n获取当前毫秒时间\n用相同的K和随机值在N个master上请求锁(与单master是一个逻辑),请求锁时会有一个比释放锁的超时时间小得多的超时时间,如锁自动释放的时间是10秒,请求锁的超时时间可能是几十毫秒,防止在某个宕机的master上阻塞太长时间\n客户端计算在上一步获取锁时花费的总时间(当前时间-第一步的时间),如果总时间不超过自动释放锁的时间且在一半以上master上获取锁成功,则整个分布式锁获取成功\n如果获取分布式锁成功,那么真实的释放锁时间就是超时时间减去获取锁消耗的时间\n如果获取锁失败了,那么客户端会到所有的master上去释放锁(即使没有在该master上成功上锁)\n\n当获取锁失败时,会进入重试阶段,这个阶段要注意防止出现”活锁”,比如客户端A,B,C在五个master上分别获取到了2,2,1个锁,按照规则他们谁都没有获取到锁,于是三个客户端都释放锁,再次重试过程中,可能再次出现2,2,1的获取情况,谁有没有获取到锁,不断地重试…… 所以每个客户端应该在一个随机时延后再次重试\n释放锁的时候应该向所有节点发起释放锁操作,因为可能出现”客户端上锁成功,但是节点向客户端返回的ACK数据丢失了”,放了防止这种情况下的漏释放锁,需要向所有节点发起释放锁的操作\n异常重启当某个获取到锁的master节点重启以后,之前set的锁可能就会丢失,这样可能在超时时间内会有其他客户端获取到锁,解决办法就是延时重启,将master实例的重启时间设置到超时时间之后,这样当实例重启以后,K的丢失就没有影响了(超时时间过了本来也应该删除),同时他没有立马加入”集群”,这样别的客户端就无法获取超过一半节点的锁,最终也就不会获取到锁\nRedLock的问题DDIA的作者认为redLock的安全性并不足够,原因之一就是redLock没法解决”获取到锁的客户端由于某些阻塞原因导致锁超时被释放后,当前客户端自己并不知道这一点而继续操作共享资源”的情况;也就是说Martin认为 被贡献的资源本身没有提供fencing机制,仅仅依靠资源外的分布式锁,很难做到特别好的安全性\nMartin说RedLock的安全过分依赖系统计时,假设客户端A在5个节点中获取到了1,2,3的锁,随后3节点上的主机发生时钟飘逸(修改了时钟或者NTP更新了时钟),锁被提前释放,随后客户端B获取到3,4,5上的锁,此时两个客户端同时持有锁\nzookeeper实现角色划分\nproposal&amp;pid: 提议就是对于集群数据修改的建议,pid是一个递增的值,唯一标识提议\nserver: 负责响应提议,每一个server记录了自己的当前编号,他只能接受提议号比自己当前记录号大的那些提议,server总数是确定的,一个提议必须有一半以上的server通过,该提议才算通过\nleader: 如果所有server地位平等,那么整个集群可能出现活锁的现象,所以设计了leader这个角色,只有leader有权利发出提议,server如果想发出提议,需要将提议先发送给leader\n数据:client连接server 去get数据的时候,该server的数据可能并不是最新的(因为提议只要过半数server通过 就生效,所以集群并不是所有server统一数据),如果要求获取最新数据,该server需要去跟leader进行数据同步\n\n实现分布式锁session会话每一个会话都有一个会话ID,全局唯一;每个会话会有相应的timeout,指定时间内没有进行数据交流,该会话就会被关闭,如果会话断开,只要在timeout时间内再次连接到集群,该会话仍然有效,客户端会不断地ping服务端以保持会话的激活状态\n节点zookeeper提供了一个类似于文件系统的多层次命名空间,以/分割,例如/a/v这个path对应的znode,其父节点是/a,祖父节点是/\nznode大类型上分为持久节点/临时节点与是否有序节点\n临时节点是说节点与会话绑定,当会话关闭后,该节点也会被删除,持久节点即使客户端崩溃也不会删除,只有主动调用delete才能删除\n有序节点是由zookeeper自动分配的一个递增号,如在/a下构建一个/a/v-的有序节点,zookeeper会自动为其分配一个递增id 最终path 可能为/a/v-00000001\nwatch客户端可以对znode设置监听事件,当相应事件发生时,zookeeper会主动通知客户端,可监听的事件有\n\n节点创建\n节点删除\n节点数据修改\n子节点变更\n\n实现根据以上说的zookeeper特性,我们可以实现相应的分布式锁\n首先,客户端尝试在/lock znode下创建有序子节点,创建成功后获取/lock下的子znode列表,判断自己创建的znode是否是列表中的最小序号,如果是,相当于获取到锁\n如果不是则要利用watch事件等待锁,方法就是watch当前znode的前一个znode,比如000004watch000003,000003watch000002,这样避免出现惊群现象(watch整个子列表时,一个znode的删除会唤醒所有的其他客户端)\n当然也可以不创建有序znode,而是创建同一个znode,创建失败的那些客户端,watch这个znode的删除,只不过这样可能会出现惊群现象\n问题不管是否创建有序znode,zookeeper实现的分布式锁都有一个问题,临时znode的生命周期是和会话绑定的,Java端会有一个专门的处理线程,不断向服务端发送ping,保持会话的活性,如果类比redis来看,这其实就是在不断的进行锁的续约\n但是,如果在某一时刻,获取到锁的客户端进入到了一个非常长的GC pause,那么保活线程自然也无法发送ping,会话会被关闭,znode删除,其他客户端获取到锁,当GC停止后,该客户端以为自己仍然持有锁,最终出现与redis一样的”两个客户端同时持有锁”的情况出现\nfetching tokenMartin认为,分布式的情况下,如果资源本身没有fetching机制,很难保证安全性,他提出共享资源本身应该要有一个fetching token,这是一个单调递增的值,当获取到分布式锁的同时,向客户端返回这个fetching token,客户端每次对于共享资源的请求都会携带这个token,共享资源比对token的值,如果当前的最大token值,那么就会拒绝这个请求\n通过这么一种机制,就可以解决之前说的”各种阻塞致使锁超时释放,导致多个客户端持有锁”的情况,因为后请求到锁的客户端,其token一定会更大,那么其他客户端的请求都会被拒绝\n但是这个机制有很多细节问题\n\n如果资源服务器也是集群分布式的,那么要怎么保证整个集群看到的最大fetching token值是一样的\n如果资源服务器本身支持fetching token,那么还需要分布式锁吗\nfetching token要有谁来生成呢?分布式锁的集群还是资源服务器呢？\n\n分布式限流Redis+LuaSpringCloud的gateway就是基于Redis+Lua以及令牌桶算法实现的分布式限流\nLua脚本的内容就是令牌桶算法的实现(参考guava的ratelimiter)\nRPC框架设计RPC协议设计\n如何规定远程调用的语法\n如何传递参数,用什么协议,如果标识参数分界,不至于让两次的调用参数混在一起\n如何表示数据,比如传递一个结构体,一个类\n如何获取服务端的调用信息,比如有哪些可用的调用,通过哪个端口访问这些调用\n发生了错误怎么办,比如服务端崩溃重启,是否应该重新调用之前的调用,如果该调用被执行两次,是不是会有问题\n\n目前RPC的标准模式如下\n\n调用方/提供方stub负责将调用接口,方法,参数按照规定的协议进行编码,随后通过RPCRuntime进行数据传输\nDubbodubbo的所有功能都是插件式的,可以自己实现,定义,组装,这种插件式很适合使用SPI实现,但是dubbo对原生的SPI进行了增强\nkafkaKafka的整体架构如图所示\n\nkafka集群本身只包含broker和zookeeper\nzookeeper在其中扮演一个kafka集群配置管理中心的角色,其存储配置信息,broker信息,topic信息等元数据,并且承担了部分协调选主的功能\n对于目前版本的kafka来说,消费者生产者都不会与zookeeper进行数据交互,所以整个kafka集群的性能瓶颈并不在zookeeper上。生产者消费者都是直接与broker进行通信的,kafka并没有采取添加一层代理层进行请求路由的设计,而是由broker自己实现内部路由协议,不借助中间代理层,也就缩短了数据链路,提高了系统性能\nBroker\nkafka是reactor的模式,通过网络线程池来处理网络请求以及收发包,打包解包,然后将请求放到一个请求队列中交由核心处理模块操作(也就是将消息写入磁盘或者从磁盘读取消息),随后将应答放到请求来源相应的应答队列中\n消息存储\nkafka的topic和partition都是一个抽象概念,partition下的segment才是实际的文件。每个segment文件的大小相等,其文件名就是其中最小的offset,这样当查找某一条消息所在的segment时,就可以根据文件名用二分查找快速的找到对应的segment文件,同时每个segment还额外对应两个index(稀疏索引,不会与消息一一对应)文件,根据相应index文件就可以使用二分查找找出消息在segment中的位置,这两个index一个是offset相关,一个是时间相关\n整个消息的写入基于顺序写,通过文件名以及相应index,又加快了消息的读取\n可能的优化在上面Broker的架构图中,核心处理模块会从请求队列中拉取请求并进行处理,这里的处理主要是对消息解压成消息对象进行校验以及写消息到磁盘。每个核心线程处理完请求(写IO)后会判断当前未刷盘的请求数,如果有太多的请求没有刷盘,该核心线程需要去主动刷盘然后才能返回。\n上述过程的主要优化点在于生成java对象以及刷盘过程\n针对此,可以直接针对内存Byte进行校验而不转成消息对象\n同时引入刷盘线程,核心线程只是生成一个刷盘任务放到刷盘队列中,每个刷盘队列对应一个刷盘线程,由该线程进行异步的刷盘,不阻塞核心线程\n投递语义kafka提供三个消息投递语义\n最多一次先获取数据,再修改offset,再进行业务处理\n\n生产者生产消息异常，不管，生产下一个消息，消息就丢了\n\n消费者处理消息，先更新offset，再做业务处理，做业务处理失败，消费者重启，消息就丢了\n\n\n最少一次\n生产者生产消息异常，消息是否成功写入不确定，重做，可能写入重复的消息\n消费者处理消息，业务处理成功后，更新offset失败，消费者重启的话，会重复消费\n\n只且一次这种最难实现,他要求生产者和消费者保证幂等,由于生产者和消费者不属于kafka的一部分,所以对于这个语义kafka要求消费者必须也是kafka\n生产幂等为每个producer分配一个pid，作为该producer的唯一标识。producer会为每一个&lt;topic,partition&gt;维护一个单调递增的seq。类似的，broker也会为每个&lt;pid,topic,partition&gt;记录下最新的seq。当req_seq == broker_seq+1时，broker才会接受该消息\n\n消息的seq比broker的seq大，说明中间有数据还没写入，即乱序了。\n消息的seq比broker的seq小，那么说明该消息已被保存。\n\n消费幂等\n消费者保证业务上的幂等性,即使重复消费最终结果也是一样的\n将commit offset和消费逻辑绑定成一个事务\n\nRedis网络框架Redis的网络框架是基于事件驱动的reactor模式,所谓事件驱动就是把一个网络服务器在其生命周期内能碰到的所有事情都注册一个handler函数，等待某个事件发生就调用它的handler去做相应的处理，一个事件没有发生的时候，cpu就去处理其他事件，不让一个事件的处理由于非必要的IO等待阻塞主其他事件的处理，最大限度地提高cpu使用率。\n主线程首先注册accept事件,新的连接注册可读事件,读时间的处理函数判断是否读了一个完整的包,如果没有读完就注册可读时间继续循环,如果读完了就处理相应的请求,并将请求结果返回,如果没有写完那么就注册可写事件,当可写时继续写剩余的数据\n\n持久化Redis持久化有两种模式AOF和RDB,同一时刻只能进行一种持久化\nRDBrdb的基本逻辑就是利用linux的fork后的COW机制实现内存快照,子进程将快照数据写到磁盘,由于是快照数据所以在redis重启恢复数据时会比较快,但是这种较重的操作就必不可能频繁的进行所以可能会丢失大量数据\nrdb是redis默认的持久化方式,可以配置持久化时机\n123save 900 1          //15分钟内有一条数据写入时触发rdb持久化save 300 10        //5分钟内有10条数据写入时触发rdb持久化save 60 10000     //1分钟内有10000条数据写入时触发rdb持久化\n也可以通过命令手动触发持久化,save/bgsave,前一个命令是主进程进行持久化操作,阻塞其他的请求,bdsave\n是使用后台进程进行持久化\nAOF将服务器收到的命令追加写到文件尾,恢复时以此重放文件中的命令即可\nAOF的write是由主线程调用的,但是write只会把数据写到内核缓冲区中,这一部分并不耗时,真正从内核缓冲区刷盘的fsync步骤是由异步线程完成的\nAOF的问题在于文件中可能存在大量的冗余命令,即浪费磁盘空间又会导致重启load数据的速度变慢\n为了解决这个问题,redis会有一个独立的进程去执行AOF重写工作,AOF重写由子进程执行,他会根据redis当前的数据内容生成相应的命令,将命令写到新的AOF文件中,在此阶段处理客户端请求的线程会将命令同时写的AOF文件(内核缓冲区)以及AOF重写缓存\n子进程的AOF重写执行完以后,向父进程发送信号,信号处理函数将AOF重写缓冲区的数据写到新AOF文件中,用新AOF文件替换旧的\n可以通过bgrewriteaofCommand手动触发AOF重写\nAOF数据丢失AOF的数据丢失量取决于appendfsync的配置\n\nalways:每次写入都刷盘,会丢失宕机前的那次epoll事件更新的数据(比如某次epoll接收到的客户端通过管道发送多条命令,这些命令全部执行完以后才会调用fsync)\neverysec:每秒刷盘一次,理论上最大丢失一秒数据,但是redis中有个逻辑”如果本次刷盘前,刷盘线程已经在工作,那么本次刷盘延后2秒”,所以最坏情况下会丢失两秒的数据\nno:刷盘时机有操作系统决定\n\n","dateCreated":"2019-08-12T00:07:32+08:00","dateModified":"2019-08-12T00:07:32+08:00","datePublished":"2019-08-12T00:07:32+08:00","description":"","headline":"","image":[],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/08/12/面试学习/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/08/12/面试学习/"}</script>
+    <meta name="description" content="分布式锁Redis实现有问题的实现基于故障切换带超时的KV最简单的实现就是setnx,当K不存在的时候才set相应的value,为了防止客户端挂掉而没有delete相应K以释放锁,set要带超时时间,同时为了防止出现”客户端A拿到锁超时时间内没有释放锁,锁自动释放被客户端B获取,A处理完任务后调用delete却释放了客户端B正在使用的锁”的情况出现,可以使用lua脚本(保证get 判断 del三个">
+<meta property="og:type" content="blog">
+<meta property="og:title" content="一条咸鱼">
+<meta property="og:url" content="http://yoursite.com/2019/08/12/面试学习/index.html">
+<meta property="og:site_name" content="一条咸鱼">
+<meta property="og:description" content="分布式锁Redis实现有问题的实现基于故障切换带超时的KV最简单的实现就是setnx,当K不存在的时候才set相应的value,为了防止客户端挂掉而没有delete相应K以释放锁,set要带超时时间,同时为了防止出现”客户端A拿到锁超时时间内没有释放锁,锁自动释放被客户端B获取,A处理完任务后调用delete却释放了客户端B正在使用的锁”的情况出现,可以使用lua脚本(保证get 判断 del三个">
+<meta property="og:locale" content="zh-cn">
+<meta property="og:image" content="https://static001.geekbang.org/resource/image/85/25/8534c52daf3682cd1cfe5a3375ec9525.jpg">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/kafka-all.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/kafka-broker.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/kafka-storage.png">
+<meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/redis-loop.png">
+<meta property="og:updated_time" content="2019-08-11T16:07:32.117Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="一条咸鱼">
+<meta name="twitter:description" content="分布式锁Redis实现有问题的实现基于故障切换带超时的KV最简单的实现就是setnx,当K不存在的时候才set相应的value,为了防止客户端挂掉而没有delete相应K以释放锁,set要带超时时间,同时为了防止出现”客户端A拿到锁超时时间内没有释放锁,锁自动释放被客户端B获取,A处理完任务后调用delete却释放了客户端B正在使用的锁”的情况出现,可以使用lua脚本(保证get 判断 del三个">
+<meta name="twitter:image" content="https://static001.geekbang.org/resource/image/85/25/8534c52daf3682cd1cfe5a3375ec9525.jpg">
+<meta property="fb:app_id" content="[object Object]">
+    
+    
+        
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
+    
+    
+    
+    
+    <!--STYLES-->
+    <link rel="stylesheet" href="/assets/css/style-du2xmrqdqrl2ollgeiw050kpl6l4nbyz7bumjuurjgsxyopifvukebxc9lqe.min.css">
+    <!--STYLES END-->
+    
+
+    
+</head>
+
+    <body>
+        <div id="blog">
+            <!-- Define author's picture -->
+
+
+    
+        
+            
+        
+    
+
+<header id="header" data-behavior="4">
+    <i id="btn-open-sidebar" class="fa fa-lg fa-bars"></i>
+    <div class="header-title">
+        <a class="header-title-link" href="/ ">一条咸鱼</a>
+    </div>
+    
+        
+            <a class="header-right-picture " href="#about">
+        
+        
+            <img class="header-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+        </a>
+    
+</header>
+
+            <!-- Define author's picture -->
+
+
+
+        
+    
+
+<nav id="sidebar" data-behavior="4">
+    <div class="sidebar-container">
+        
+            <div class="sidebar-profile">
+                <a href="/#about">
+                    <img class="sidebar-profile-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+                </a>
+                <h4 class="sidebar-profile-name">一条咸鱼</h4>
+                
+                    <h5 class="sidebar-profile-bio"><p>Java Developer</p>
+</h5>
+                
+            </div>
+        
+        
+            <ul class="sidebar-buttons">
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/ " title="首页">
+                    
+                        <i class="sidebar-button-icon fa fa-home" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">首页</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link open-algolia-search" href="/all-archives" title="归档">
+                    
+                        <i class="sidebar-button-icon fa fa-archive" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">归档</span>
+                    </a>
+            </li>
+            
+                <li class="sidebar-button">
+                    
+                        <a class="sidebar-button-link " href="/about" title="关于">
+                    
+                        <i class="sidebar-button-icon fa fa-user" aria-hidden="true"></i>
+                        <span class="sidebar-button-desc">关于</span>
+                    </a>
+            </li>
+            
+        </ul>
+        
+    </div>
+</nav>
+
+            
+            <div id="main" data-behavior="4"
+                 class="
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
+    
+        <div class="post-header main-content-wrap text-left">
+    
+        <h1 class="post-title">
+            (无标题)
+        </h1>
+    
+    
+        <div class="post-meta">
+    <time datetime="2019-08-12T00:07:32+08:00">
+	
+		    8月 12, 2019
+    	
+    </time>
+    
+</div>
+
+    
+</div>
+
+    
+    <div class="post-content markdown">
+        <div class="main-content-wrap">
+            <h1 id="分布式锁"><a href="#分布式锁" class="headerlink" title="分布式锁"></a>分布式锁</h1><h2 id="Redis实现"><a href="#Redis实现" class="headerlink" title="Redis实现"></a>Redis实现</h2><h3 id="有问题的实现"><a href="#有问题的实现" class="headerlink" title="有问题的实现"></a>有问题的实现</h3><h4 id="基于故障切换带超时的KV"><a href="#基于故障切换带超时的KV" class="headerlink" title="基于故障切换带超时的KV"></a>基于故障切换带超时的KV</h4><p>最简单的实现就是setnx,当K不存在的时候才set相应的value,为了防止客户端挂掉而没有delete相应K以释放锁,set要带超时时间,同时为了防止出现”客户端A拿到锁超时时间内没有释放锁,锁自动释放被客户端B获取,A处理完任务后调用delete却释放了客户端B正在使用的锁”的情况出现,可以使用lua脚本(保证get 判断 del三个操作为一个原子操作)在delete进行判断”只有K存在且其对应的V是我期待的V时才删除这个K”</p>
+<p>这样在setnx上锁的时候V就可以设置成随机值</p>
+<p>但是单master的redis可用性太低,于是引用slave,又由于redis的主从复制是异步的,客户端A向master set了KV 随后master倒掉 slave变成新的master,但之前的KV还没有来得及同步过来,所以客户端B同样可以set KV 这就出现了同一个锁被多个客户端持有的现象</p>
+<p>同时超时时间的设置并不好确定,太短了 任务可能没执行完锁就被释放了,这要求程序时不时的去修改超时时间以续约锁,如果太长了 程序效率又很低下</p>
+<h3 id="RedLock"><a href="#RedLock" class="headerlink" title="RedLock"></a>RedLock</h3><p>为提高可用性,需要部署多个(N)master节点(这些节点之间并没有什么关系),客户端获取锁的操作如下</p>
+<ul>
+<li>获取当前毫秒时间</li>
+<li>用相同的K和随机值在N个master上请求锁(与单master是一个逻辑),请求锁时会有一个比释放锁的超时时间小得多的超时时间,如锁自动释放的时间是10秒,请求锁的超时时间可能是几十毫秒,防止在某个宕机的master上阻塞太长时间</li>
+<li>客户端计算在上一步获取锁时花费的总时间(当前时间-第一步的时间),如果总时间不超过自动释放锁的时间且在一半以上master上获取锁成功,则整个分布式锁获取成功</li>
+<li>如果获取分布式锁成功,那么真实的释放锁时间就是超时时间减去获取锁消耗的时间</li>
+<li>如果获取锁失败了,那么客户端会到所有的master上去释放锁(即使没有在该master上成功上锁)</li>
+</ul>
+<p>当获取锁失败时,会进入重试阶段,这个阶段要注意防止出现”活锁”,比如客户端A,B,C在五个master上分别获取到了2,2,1个锁,按照规则他们谁都没有获取到锁,于是三个客户端都释放锁,再次重试过程中,可能再次出现2,2,1的获取情况,谁有没有获取到锁,不断地重试…… 所以每个客户端应该在一个随机时延后再次重试</p>
+<p>释放锁的时候应该向所有节点发起释放锁操作,因为可能出现”客户端上锁成功,但是节点向客户端返回的ACK数据丢失了”,放了防止这种情况下的漏释放锁,需要向所有节点发起释放锁的操作</p>
+<h4 id="异常重启"><a href="#异常重启" class="headerlink" title="异常重启"></a>异常重启</h4><p>当某个获取到锁的master节点重启以后,之前set的锁可能就会丢失,这样可能在超时时间内会有其他客户端获取到锁,解决办法就是延时重启,将master实例的重启时间设置到超时时间之后,这样当实例重启以后,K的丢失就没有影响了(超时时间过了本来也应该删除),同时他没有立马加入”集群”,这样别的客户端就无法获取超过一半节点的锁,最终也就不会获取到锁</p>
+<h4 id="RedLock的问题"><a href="#RedLock的问题" class="headerlink" title="RedLock的问题"></a>RedLock的问题</h4><p>DDIA的作者认为redLock的安全性并不足够,原因之一就是redLock没法解决”获取到锁的客户端由于某些阻塞原因导致锁超时被释放后,当前客户端自己并不知道这一点而继续操作共享资源”的情况;也就是说Martin认为 被贡献的资源本身没有提供fencing机制,仅仅依靠资源外的分布式锁,很难做到特别好的安全性</p>
+<p>Martin说RedLock的安全过分依赖系统计时,假设客户端A在5个节点中获取到了1,2,3的锁,随后3节点上的主机发生时钟飘逸(修改了时钟或者NTP更新了时钟),锁被提前释放,随后客户端B获取到3,4,5上的锁,此时两个客户端同时持有锁</p>
+<h2 id="zookeeper实现"><a href="#zookeeper实现" class="headerlink" title="zookeeper实现"></a>zookeeper实现</h2><h3 id="角色划分"><a href="#角色划分" class="headerlink" title="角色划分"></a>角色划分</h3><ul>
+<li>proposal&amp;pid: 提议就是对于集群数据修改的建议,pid是一个递增的值,唯一标识提议</li>
+<li>server: 负责响应提议,每一个server记录了自己的当前编号,他只能接受提议号比自己当前记录号大的那些提议,server总数是确定的,一个提议必须有一半以上的server通过,该提议才算通过</li>
+<li>leader: 如果所有server地位平等,那么整个集群可能出现活锁的现象,所以设计了leader这个角色,只有leader有权利发出提议,server如果想发出提议,需要将提议先发送给leader</li>
+<li>数据:client连接server 去get数据的时候,该server的数据可能并不是最新的(因为提议只要过半数server通过 就生效,所以集群并不是所有server统一数据),如果要求获取最新数据,该server需要去跟leader进行数据同步</li>
+</ul>
+<h3 id="实现分布式锁"><a href="#实现分布式锁" class="headerlink" title="实现分布式锁"></a>实现分布式锁</h3><h4 id="session会话"><a href="#session会话" class="headerlink" title="session会话"></a>session会话</h4><p>每一个会话都有一个会话ID,全局唯一;每个会话会有相应的timeout,指定时间内没有进行数据交流,该会话就会被关闭,如果会话断开,只要在timeout时间内再次连接到集群,该会话仍然有效,客户端会不断地ping服务端以保持会话的激活状态</p>
+<h4 id="节点"><a href="#节点" class="headerlink" title="节点"></a>节点</h4><p>zookeeper提供了一个类似于文件系统的多层次命名空间,以/分割,例如/a/v这个path对应的znode,其父节点是/a,祖父节点是/</p>
+<p>znode大类型上分为持久节点/临时节点与是否有序节点</p>
+<p>临时节点是说节点与会话绑定,当会话关闭后,该节点也会被删除,持久节点即使客户端崩溃也不会删除,只有主动调用delete才能删除</p>
+<p>有序节点是由zookeeper自动分配的一个递增号,如在/a下构建一个/a/v-的有序节点,zookeeper会自动为其分配一个递增id 最终path 可能为/a/v-00000001</p>
+<h4 id="watch"><a href="#watch" class="headerlink" title="watch"></a>watch</h4><p>客户端可以对znode设置监听事件,当相应事件发生时,zookeeper会主动通知客户端,可监听的事件有</p>
+<ul>
+<li>节点创建</li>
+<li>节点删除</li>
+<li>节点数据修改</li>
+<li>子节点变更</li>
+</ul>
+<h4 id="实现"><a href="#实现" class="headerlink" title="实现"></a>实现</h4><p>根据以上说的zookeeper特性,我们可以实现相应的分布式锁</p>
+<p>首先,客户端尝试在/lock znode下创建有序子节点,创建成功后获取/lock下的子znode列表,判断自己创建的znode是否是列表中的最小序号,如果是,相当于获取到锁</p>
+<p>如果不是则要利用watch事件等待锁,方法就是watch当前znode的前一个znode,比如000004watch000003,000003watch000002,这样避免出现惊群现象(watch整个子列表时,一个znode的删除会唤醒所有的其他客户端)</p>
+<p>当然也可以不创建有序znode,而是创建同一个znode,创建失败的那些客户端,watch这个znode的删除,只不过这样可能会出现惊群现象</p>
+<h4 id="问题"><a href="#问题" class="headerlink" title="问题"></a>问题</h4><p>不管是否创建有序znode,zookeeper实现的分布式锁都有一个问题,临时znode的生命周期是和会话绑定的,Java端会有一个专门的处理线程,不断向服务端发送ping,保持会话的活性,如果类比redis来看,这其实就是在不断的进行锁的续约</p>
+<p>但是,如果在某一时刻,获取到锁的客户端进入到了一个非常长的GC pause,那么保活线程自然也无法发送ping,会话会被关闭,znode删除,其他客户端获取到锁,当GC停止后,该客户端以为自己仍然持有锁,最终出现与redis一样的”两个客户端同时持有锁”的情况出现</p>
+<h2 id="fetching-token"><a href="#fetching-token" class="headerlink" title="fetching token"></a>fetching token</h2><p>Martin认为,分布式的情况下,如果资源本身没有fetching机制,很难保证安全性,他提出共享资源本身应该要有一个fetching token,这是一个单调递增的值,当获取到分布式锁的同时,向客户端返回这个fetching token,客户端每次对于共享资源的请求都会携带这个token,共享资源比对token的值,如果当前的最大token值,那么就会拒绝这个请求</p>
+<p>通过这么一种机制,就可以解决之前说的”各种阻塞致使锁超时释放,导致多个客户端持有锁”的情况,因为后请求到锁的客户端,其token一定会更大,那么其他客户端的请求都会被拒绝</p>
+<p>但是这个机制有很多细节问题</p>
+<ul>
+<li>如果资源服务器也是集群分布式的,那么要怎么保证整个集群看到的最大fetching token值是一样的</li>
+<li>如果资源服务器本身支持fetching token,那么还需要分布式锁吗</li>
+<li>fetching token要有谁来生成呢?分布式锁的集群还是资源服务器呢？</li>
+</ul>
+<h1 id="分布式限流"><a href="#分布式限流" class="headerlink" title="分布式限流"></a>分布式限流</h1><h2 id="Redis-Lua"><a href="#Redis-Lua" class="headerlink" title="Redis+Lua"></a>Redis+Lua</h2><p>SpringCloud的gateway就是基于Redis+Lua以及令牌桶算法实现的分布式限流</p>
+<p>Lua脚本的内容就是令牌桶算法的实现(参考guava的ratelimiter)</p>
+<h1 id="RPC框架设计"><a href="#RPC框架设计" class="headerlink" title="RPC框架设计"></a>RPC框架设计</h1><h2 id="RPC协议设计"><a href="#RPC协议设计" class="headerlink" title="RPC协议设计"></a>RPC协议设计</h2><ul>
+<li>如何规定远程调用的语法</li>
+<li>如何传递参数,用什么协议,如果标识参数分界,不至于让两次的调用参数混在一起</li>
+<li>如何表示数据,比如传递一个结构体,一个类</li>
+<li>如何获取服务端的调用信息,比如有哪些可用的调用,通过哪个端口访问这些调用</li>
+<li>发生了错误怎么办,比如服务端崩溃重启,是否应该重新调用之前的调用,如果该调用被执行两次,是不是会有问题</li>
+</ul>
+<p>目前RPC的标准模式如下</p>
+<p><img src="https://static001.geekbang.org/resource/image/85/25/8534c52daf3682cd1cfe5a3375ec9525.jpg" alt="img"></p>
+<p>调用方/提供方stub负责将调用接口,方法,参数按照规定的协议进行编码,随后通过RPCRuntime进行数据传输</p>
+<h1 id="Dubbo"><a href="#Dubbo" class="headerlink" title="Dubbo"></a>Dubbo</h1><p>dubbo的所有功能都是插件式的,可以自己实现,定义,组装,这种插件式很适合使用SPI实现,但是dubbo对原生的SPI进行了增强</p>
+<h1 id="kafka"><a href="#kafka" class="headerlink" title="kafka"></a>kafka</h1><p>Kafka的整体架构如图所示</p>
+<p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/kafka-all.png" alt></p>
+<p>kafka集群本身只包含broker和zookeeper</p>
+<p>zookeeper在其中扮演一个kafka集群配置管理中心的角色,其存储配置信息,broker信息,topic信息等元数据,并且承担了部分协调选主的功能</p>
+<p>对于目前版本的kafka来说,消费者生产者都不会与zookeeper进行数据交互,所以整个kafka集群的性能瓶颈并不在zookeeper上。生产者消费者都是直接与broker进行通信的,kafka并没有采取添加一层代理层进行请求路由的设计,而是由broker自己实现内部路由协议,不借助中间代理层,也就缩短了数据链路,提高了系统性能</p>
+<h2 id="Broker"><a href="#Broker" class="headerlink" title="Broker"></a>Broker</h2><p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/kafka-broker.png" alt></p>
+<p>kafka是reactor的模式,通过网络线程池来处理网络请求以及收发包,打包解包,然后将请求放到一个请求队列中交由核心处理模块操作(也就是将消息写入磁盘或者从磁盘读取消息),随后将应答放到请求来源相应的应答队列中</p>
+<h2 id="消息存储"><a href="#消息存储" class="headerlink" title="消息存储"></a>消息存储</h2><p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/kafka-storage.png" alt></p>
+<p>kafka的topic和partition都是一个抽象概念,partition下的segment才是实际的文件。每个segment文件的大小相等,其文件名就是其中最小的offset,这样当查找某一条消息所在的segment时,就可以根据文件名用二分查找快速的找到对应的segment文件,同时每个segment还额外对应两个index(稀疏索引,不会与消息一一对应)文件,根据相应index文件就可以使用二分查找找出消息在segment中的位置,这两个index一个是offset相关,一个是时间相关</p>
+<p>整个消息的写入基于顺序写,通过文件名以及相应index,又加快了消息的读取</p>
+<h2 id="可能的优化"><a href="#可能的优化" class="headerlink" title="可能的优化"></a>可能的优化</h2><p>在上面Broker的架构图中,核心处理模块会从请求队列中拉取请求并进行处理,这里的处理主要是对消息解压成消息对象进行校验以及写消息到磁盘。每个核心线程处理完请求(写IO)后会判断当前未刷盘的请求数,如果有太多的请求没有刷盘,该核心线程需要去主动刷盘然后才能返回。</p>
+<p>上述过程的主要优化点在于生成java对象以及刷盘过程</p>
+<p>针对此,可以直接针对内存Byte进行校验而不转成消息对象</p>
+<p>同时引入刷盘线程,核心线程只是生成一个刷盘任务放到刷盘队列中,每个刷盘队列对应一个刷盘线程,由该线程进行异步的刷盘,不阻塞核心线程</p>
+<h2 id="投递语义"><a href="#投递语义" class="headerlink" title="投递语义"></a>投递语义</h2><p>kafka提供三个消息投递语义</p>
+<h3 id="最多一次"><a href="#最多一次" class="headerlink" title="最多一次"></a>最多一次</h3><p>先获取数据,再修改offset,再进行业务处理</p>
+<ul>
+<li><p>生产者生产消息异常，不管，生产下一个消息，消息就丢了</p>
+</li>
+<li><p>消费者处理消息，先更新offset，再做业务处理，做业务处理失败，消费者重启，消息就丢了</p>
+</li>
+</ul>
+<h3 id="最少一次"><a href="#最少一次" class="headerlink" title="最少一次"></a>最少一次</h3><ul>
+<li>生产者生产消息异常，消息是否成功写入不确定，重做，可能写入重复的消息</li>
+<li>消费者处理消息，业务处理成功后，更新offset失败，消费者重启的话，会重复消费</li>
+</ul>
+<h3 id="只且一次"><a href="#只且一次" class="headerlink" title="只且一次"></a>只且一次</h3><p>这种最难实现,他要求生产者和消费者保证幂等,由于生产者和消费者不属于kafka的一部分,所以对于这个语义kafka要求消费者必须也是kafka</p>
+<h4 id="生产幂等"><a href="#生产幂等" class="headerlink" title="生产幂等"></a>生产幂等</h4><p>为每个producer分配一个pid，作为该producer的唯一标识。producer会为每一个&lt;topic,partition&gt;维护一个单调递增的seq。类似的，broker也会为每个&lt;pid,topic,partition&gt;记录下最新的seq。当req_seq == broker_seq+1时，broker才会接受该消息</p>
+<ul>
+<li>消息的seq比broker的seq大，说明中间有数据还没写入，即乱序了。</li>
+<li>消息的seq比broker的seq小，那么说明该消息已被保存。</li>
+</ul>
+<h4 id="消费幂等"><a href="#消费幂等" class="headerlink" title="消费幂等"></a>消费幂等</h4><ul>
+<li>消费者保证业务上的幂等性,即使重复消费最终结果也是一样的</li>
+<li>将commit offset和消费逻辑绑定成一个事务</li>
+</ul>
+<h1 id="Redis"><a href="#Redis" class="headerlink" title="Redis"></a>Redis</h1><h2 id="网络框架"><a href="#网络框架" class="headerlink" title="网络框架"></a>网络框架</h2><p>Redis的网络框架是基于事件驱动的reactor模式,所谓事件驱动就是把一个网络服务器在其生命周期内能碰到的所有事情都注册一个handler函数，等待某个事件发生就调用它的handler去做相应的处理，一个事件没有发生的时候，cpu就去处理其他事件，不让一个事件的处理由于非必要的IO等待阻塞主其他事件的处理，最大限度地提高cpu使用率。</p>
+<p>主线程首先注册accept事件,新的连接注册可读事件,读时间的处理函数判断是否读了一个完整的包,如果没有读完就注册可读时间继续循环,如果读完了就处理相应的请求,并将请求结果返回,如果没有写完那么就注册可写事件,当可写时继续写剩余的数据</p>
+<p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/redis-loop.png" alt></p>
+<h2 id="持久化"><a href="#持久化" class="headerlink" title="持久化"></a>持久化</h2><p>Redis持久化有两种模式AOF和RDB,同一时刻只能进行一种持久化</p>
+<h3 id="RDB"><a href="#RDB" class="headerlink" title="RDB"></a>RDB</h3><p>rdb的基本逻辑就是利用linux的fork后的COW机制实现内存快照,子进程将快照数据写到磁盘,由于是快照数据所以在redis重启恢复数据时会比较快,但是这种较重的操作就必不可能频繁的进行所以可能会丢失大量数据</p>
+<p>rdb是redis默认的持久化方式,可以配置持久化时机</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">save 900 1          //15分钟内有一条数据写入时触发rdb持久化</span><br><span class="line">save 300 10        //5分钟内有10条数据写入时触发rdb持久化</span><br><span class="line">save 60 10000     //1分钟内有10000条数据写入时触发rdb持久化</span><br></pre></td></tr></table></figure>
+<p>也可以通过命令手动触发持久化,save/bgsave,前一个命令是主进程进行持久化操作,阻塞其他的请求,bdsave</p>
+<p>是使用后台进程进行持久化</p>
+<h3 id="AOF"><a href="#AOF" class="headerlink" title="AOF"></a>AOF</h3><p>将服务器收到的命令追加写到文件尾,恢复时以此重放文件中的命令即可</p>
+<p>AOF的write是由主线程调用的,但是write只会把数据写到内核缓冲区中,这一部分并不耗时,真正从内核缓冲区刷盘的fsync步骤是由异步线程完成的</p>
+<p>AOF的问题在于文件中可能存在大量的冗余命令,即浪费磁盘空间又会导致重启load数据的速度变慢</p>
+<p>为了解决这个问题,redis会有一个独立的进程去执行AOF重写工作,AOF重写由子进程执行,他会根据redis当前的数据内容生成相应的命令,将命令写到新的AOF文件中,在此阶段处理客户端请求的线程会将命令同时写的AOF文件(内核缓冲区)以及AOF重写缓存</p>
+<p>子进程的AOF重写执行完以后,向父进程发送信号,信号处理函数将AOF重写缓冲区的数据写到新AOF文件中,用新AOF文件替换旧的</p>
+<p>可以通过bgrewriteaofCommand手动触发AOF重写</p>
+<h4 id="AOF数据丢失"><a href="#AOF数据丢失" class="headerlink" title="AOF数据丢失"></a>AOF数据丢失</h4><p>AOF的数据丢失量取决于appendfsync的配置</p>
+<ul>
+<li>always:每次写入都刷盘,会丢失宕机前的那次epoll事件更新的数据(比如某次epoll接收到的客户端通过管道发送多条命令,这些命令全部执行完以后才会调用fsync)</li>
+<li>everysec:每秒刷盘一次,理论上最大丢失一秒数据,但是redis中有个逻辑”如果本次刷盘前,刷盘线程已经在工作,那么本次刷盘延后2秒”,所以最坏情况下会丢失两秒的数据</li>
+<li>no:刷盘时机有操作系统决定</li>
+</ul>
+
+            
+
+        </div>
+    </div>
+    <div id="post-footer" class="post-footer main-content-wrap">
+        
+        
+            <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/08/12/SPI/" data-tooltip="(无标题)" aria-label="下一篇: (无标题)">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+        
+        
+            
+        
+    </div>
+</article>
+
+
+
+                <footer id="footer" class="main-content-wrap">
+    <span class="copyrights">
+        Copyrights &copy; 2019 一条咸鱼. All Rights Reserved.
+    </span>
+</footer>
+
+            </div>
+            
+                <div id="bottom-bar" class="post-bottom-bar" data-behavior="4">
+                    <div class="post-actions-wrap">
+    <nav>
+        <ul class="post-actions post-action-nav">
+            <li class="post-action">
+                
+                    <a class="post-action-btn btn btn--disabled">
+                
+                    <i class="fa fa-angle-left" aria-hidden="true"></i>
+                    <span class="hide-xs hide-sm text-small icon-ml">上一篇</span>
+                </a>
+            </li>
+            <li class="post-action">
+                
+                    
+                    <a class="post-action-btn btn btn--default tooltip--top" href="/2019/08/12/SPI/" data-tooltip="(无标题)" aria-label="下一篇: (无标题)">
+                
+                    <span class="hide-xs hide-sm text-small icon-mr">下一篇</span>
+                    <i class="fa fa-angle-right" aria-hidden="true"></i>
+                </a>
+            </li>
+        </ul>
+    </nav>
+    <ul class="post-actions post-action-share">
+        <li class="post-action hide-lg hide-md hide-sm">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+                <i class="fa fa-share-alt" aria-hidden="true"></i>
+            </a>
+        </li>
+        
+        
+            
+        
+        <li class="post-action">
+            
+                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+            
+                <i class="fa fa-list" aria-hidden="true"></i>
+            </a>
+        </li>
+    </ul>
+</div>
+
+
+                </div>
+                <div id="share-options-bar" class="share-options-bar" data-behavior="4">
+    <i id="btn-close-shareoptions" class="fa fa-times"></i>
+    <ul class="share-options">
+        
+    </ul>
+</div>
+
+            
+        </div>
+        
+
+
+    
+        
+    
+
+<div id="about">
+    <div id="about-card">
+        <div id="about-btn-close">
+            <i class="fa fa-times"></i>
+        </div>
+        
+            <img id="about-card-picture" src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg" alt="作者的图片">
+        
+            <h4 id="about-card-name">一条咸鱼</h4>
+        
+            <div id="about-card-bio"><p>重庆</p>
+</div>
+        
+        
+            <div id="about-card-job">
+                <i class="fa fa-briefcase"></i>
+                <br>
+                <p>学生</p>
+
+            </div>
+        
+        
+    </div>
+</div>
+
+        
+        
+<div id="cover" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/sideCover.jpg');"></div>
+        <!--SCRIPTS-->
+<script src="/assets/js/script-vufjrm3fmbuttogo1hxuu0w9w0sesk5iyysjuguc2hdhufot9szxg8twijry.min.js"></script>
+<!--SCRIPTS END-->
+
+    
+
+
+
+    </body>
+</html>
