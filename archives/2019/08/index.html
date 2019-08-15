@@ -135,21 +135,21 @@
     <section class="postShorten-group main-content-wrap">
     
     
-    <article class="postShorten postShorten--thumbnailimg-bottom">
+    <article class="postShorten postShorten--thumbnailimg-left">
         <div class="postShorten-wrap">
             
             <div class="postShorten-header">
                 <h1 class="postShorten-title">
                     
-                        <a class="link-unstyled" href="/2019/08/12/SPI/">
-                            (无标题)
+                        <a class="link-unstyled" href="/2019/08/11/SPI/">
+                            SPI
                         </a>
                     
                 </h1>
                 <div class="postShorten-meta">
-    <time datetime="2019-08-12T00:07:32+08:00">
+    <time datetime="2019-08-11T14:16:42+08:00">
 	
-		    8月 12, 2019
+		    8月 11, 2019
     	
     </time>
     
@@ -157,55 +157,24 @@
 
             </div>
             
-                <div class="postShorten-content">
-                    <h1 id="概念"><a href="#概念" class="headerlink" title="概念"></a>概念</h1><p>我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类</p>
-<p>代码里通过interface引用具体实现类对象</p>
-<p>也就是说interface在组织上位于实现方(具体实现类)的包中</p>
-<p>相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface)</p>
-<p>其思想就是 使用方提供规则,实现方实现规则并将自己加入到使用方中</p>
-<h1 id="DriverManger"><a href="#DriverManger" class="headerlink" title="DriverManger"></a>DriverManger</h1><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span><span class="params">(String[] args)</span> </span>&#123;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        <span class="comment">//JDBC4.0以后不再需要这一行diamante</span></span><br><span class="line">        <span class="comment">//Class.forName("jdbc.mysql.XXX")</span></span><br><span class="line">        DriverManager.getConnection(<span class="string">"jdbc:mysql://localhost:3306/test?XXXX"</span>);</span><br><span class="line">    &#125; <span class="keyword">catch</span> (SQLException e) &#123;</span><br><span class="line">        e.printStackTrace();</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>以上代码是使用mysql的JDBC驱动时的代码</p>
-<p>我们引入mysql的JDBC包以后,并没有显式的与其交互,使用的还是JDBC的DriverManger类,那么mysql驱动是在哪里被加载的呢?或者说DriverManger如何找到JDBC的实现呢?</p>
-<p>DriverManger中有个静态代码块,其中的关键代码如下</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">static</span> &#123;</span><br><span class="line">    loadInitialDrivers();</span><br><span class="line">    println(<span class="string">"JDBC DriverManager initialized"</span>);</span><br><span class="line">&#125;</span><br><span class="line">    </span><br><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">loadInitialDrivers</span><span class="params">()</span> </span>&#123;</span><br><span class="line">           ServiceLoader&lt;Driver&gt; loadedDrivers = ServiceLoader.load(Driver.class);</span><br><span class="line">           Iterator&lt;Driver&gt; driversIterator = loadedDrivers.iterator();</span><br><span class="line">           <span class="keyword">try</span>&#123;</span><br><span class="line">               <span class="keyword">while</span>(driversIterator.hasNext()) &#123;</span><br><span class="line">                   driversIterator.next();</span><br><span class="line">               &#125;</span><br><span class="line">           &#125;</span><br><span class="line">    </span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>ServiceLoader是JDK6以后针对SPI提供的类,他通过线程上下文加载器来加载接口类(JDBC定义的Driver.class)(这块就是深入理解Java虚拟机中说到的双亲委派模型的第二次被破坏)</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">public</span> <span class="keyword">static</span> &lt;S&gt; <span class="function">ServiceLoader&lt;S&gt; <span class="title">load</span><span class="params">(Class&lt;S&gt; service)</span> </span>&#123;</span><br><span class="line">    ClassLoader cl = Thread.currentThread().getContextClassLoader();</span><br><span class="line">    <span class="keyword">return</span> ServiceLoader.load(service, cl);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>load方法并不真正的去加载类,算是一个懒加载模式,其中实例化了一个LazrIterator对象</p>
-<p>真正加载的工作在loadInitialDrivers中的while循环,这里的迭代器是ServiceLoader的匿名内部类</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">public</span> Iterator&lt;S&gt; <span class="title">iterator</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">new</span> Iterator&lt;S&gt;() &#123;</span><br><span class="line"></span><br><span class="line">        Iterator&lt;Map.Entry&lt;String,S&gt;&gt; knownProviders</span><br><span class="line">            = providers.entrySet().iterator();</span><br><span class="line"></span><br><span class="line">        <span class="function"><span class="keyword">public</span> <span class="keyword">boolean</span> <span class="title">hasNext</span><span class="params">()</span> </span>&#123;</span><br><span class="line">            <span class="keyword">if</span> (knownProviders.hasNext())</span><br><span class="line">                <span class="keyword">return</span> <span class="keyword">true</span>;</span><br><span class="line">            <span class="keyword">return</span> lookupIterator.hasNext();</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        <span class="function"><span class="keyword">public</span> S <span class="title">next</span><span class="params">()</span> </span>&#123;</span><br><span class="line">            <span class="keyword">if</span> (knownProviders.hasNext())</span><br><span class="line">                <span class="keyword">return</span> knownProviders.next().getValue();</span><br><span class="line">            <span class="keyword">return</span> lookupIterator.next();</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        <span class="function"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">remove</span><span class="params">()</span> </span>&#123;</span><br><span class="line">            <span class="keyword">throw</span> <span class="keyword">new</span> UnsupportedOperationException();</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">    &#125;;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>这里的knownProviders起缓存作用,我们主要关注lookupItreator(LazyIterator实例)</p>
-<p>他的hasNext最终调用下面这个方法</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">boolean</span> <span class="title">hasNextService</span><span class="params">()</span> </span>&#123;</span><br><span class="line">    <span class="keyword">if</span> (nextName != <span class="keyword">null</span>) &#123;</span><br><span class="line">        <span class="keyword">return</span> <span class="keyword">true</span>;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">if</span> (configs == <span class="keyword">null</span>) &#123;</span><br><span class="line">        <span class="keyword">try</span> &#123;</span><br><span class="line">            String fullName = PREFIX + service.getName();</span><br><span class="line">            <span class="keyword">if</span> (loader == <span class="keyword">null</span>)</span><br><span class="line">                configs = ClassLoader.getSystemResources(fullName);</span><br><span class="line">            <span class="keyword">else</span></span><br><span class="line">                configs = loader.getResources(fullName);</span><br><span class="line">        &#125; <span class="keyword">catch</span> (IOException x) &#123;</span><br><span class="line">            fail(service, <span class="string">"Error locating configuration files"</span>, x);</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">while</span> ((pending == <span class="keyword">null</span>) || !pending.hasNext()) &#123;</span><br><span class="line">        <span class="keyword">if</span> (!configs.hasMoreElements()) &#123;</span><br><span class="line">            <span class="keyword">return</span> <span class="keyword">false</span>;</span><br><span class="line">        &#125;</span><br><span class="line">        pending = parse(service, configs.nextElement());</span><br><span class="line">    &#125;</span><br><span class="line">    nextName = pending.next();</span><br><span class="line">    <span class="keyword">return</span> <span class="keyword">true</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>这里的fullName拼接中,PREFIX是”META-INF/services”,service.getName返回的就是我们最开始load的类名-java.sql.Driver</p>
-<p><img src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spi/mysql-spi.png" alt></p>
-<p>mysql驱动下就有这么一个文件,其中的内容是</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">com.mysql.jdbc.Driver</span><br><span class="line">com.mysql.fabric.jdbc.FabricMySQLDriver</span><br></pre></td></tr></table></figure>
-<p>解析这个文件,最终也就找到了JDBC的实现类,DriverManger在加载这些实现类的时候,会触发他们的静态代码块</p>
-<p>com.mysql.jdbc.driver类的静态代码如下</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">static</span> &#123;</span><br><span class="line">    <span class="keyword">try</span> &#123;</span><br><span class="line">        DriverManager.registerDriver(<span class="keyword">new</span> Driver());</span><br><span class="line">    &#125; <span class="keyword">catch</span> (SQLException var1) &#123;</span><br><span class="line">        <span class="keyword">throw</span> <span class="keyword">new</span> RuntimeException(<span class="string">"Can't register driver!"</span>);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>可以看到”实现方将自己加入到使用方中”</p>
-<p>看一下DriverManger.getConnection方法</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">private</span> <span class="keyword">static</span> Connection <span class="title">getConnection</span><span class="params">(</span></span></span><br><span class="line"><span class="function"><span class="params">    String url, java.util.Properties info, Class&lt;?&gt; caller)</span> <span class="keyword">throws</span> SQLException </span>&#123;</span><br><span class="line">    <span class="keyword">for</span>(DriverInfo aDriver : registeredDrivers) &#123;</span><br><span class="line">        <span class="keyword">if</span>(isDriverAllowed(aDriver.driver, callerCL)) &#123;</span><br><span class="line">            <span class="keyword">try</span> &#123;</span><br><span class="line">                println(<span class="string">"    trying "</span> + aDriver.driver.getClass().getName());</span><br><span class="line">                Connection con = aDriver.driver.connect(url, info);</span><br><span class="line">                <span class="keyword">if</span> (con != <span class="keyword">null</span>) &#123;</span><br><span class="line">                    <span class="keyword">return</span> (con);</span><br><span class="line">                &#125;</span><br><span class="line">            &#125; </span><br><span class="line">        &#125; </span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>遍历registerDrivers调用connect,每个具体的实现类会根据url判断是否是自己的链接格式,比如”jdbc:mysql://localhost:3306/test?XXXX”就会调用mysql的驱动实现</p>
-<h2 id="破坏双亲委派"><a href="#破坏双亲委派" class="headerlink" title="破坏双亲委派"></a>破坏双亲委派</h2><p>双亲委派规则的可见性规定 “父加载器加载的类对子加载器是可见的,反之,则不可见”</p>
-<p>但是通过我们上面的分析可以知道,通过BootStrapClassLoader加载的DriverManger类确获取到了通过AppClassLoader加载的jdbc具体实现类,这也就是为什么说SPI破坏了双亲委派。</p>
-<p>其根本原因就是DriverManger中加载实现类时是通过线程上下文加载器加载的(默认是AppClassloader),因为无法把具体的实现类放到JDK/lib下</p>
-<h1 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h1><p>当定义了接口后,只要实现方遵守规则创建一个META-INF/service/服务接口名的文件,并在其中写上具体的接口实现类,就无需在代码中指定就可以完成任意实现类的装载。</p>
-
+                <div class="postShorten-excerpt">
+                    <p>SPI</p>
                     
+                        <a href="/2019/08/11/SPI/" class="postShorten-excerpt_link link">
+                            阅读全文
+                        </a>
                         
-
-                    
-                    
-                        <p>
-                            <a href="/2019/08/12/SPI/#post-footer" class="postShorten-excerpt_link link">
-                                评论和共享
-                            </a>
-                        </p>
                     
                 </div>
             
         </div>
+        
+            <a href="/2019/08/11/SPI/">
+                <div class="postShorten-thumbnailimg">
+                    <img alt src="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png">
+                </div>
+            </a>
+            
         
     </article>
     

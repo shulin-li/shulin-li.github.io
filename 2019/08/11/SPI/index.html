@@ -6,26 +6,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="generator" content="一条咸鱼">
-    <title> - 一条咸鱼</title>
+    <title>SPI - 一条咸鱼</title>
     <meta name="author" content="一条咸鱼">
     
     
         <link rel="icon" href="http://yoursite.com/assets/images/favicon.ico">
     
     
-    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"概念我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类\n代码里通过interface引用具体实现类对象\n也就是说interface在组织上位于实现方(具体实现类)的包中\n相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface)\n其思想就是 使用方提供规则,实现方实现规则并将自己加入到使用方中\nDriverManger123456789public static void main(String[] args) &#123;    try &#123;        //JDBC4.0以后不再需要这一行diamante        //Class.forName(\"jdbc.mysql.XXX\")        DriverManager.getConnection(\"jdbc:mysql://localhost:3306/test?XXXX\");    &#125; catch (SQLException e) &#123;        e.printStackTrace();    &#125;&#125;\n以上代码是使用mysql的JDBC驱动时的代码\n我们引入mysql的JDBC包以后,并没有显式的与其交互,使用的还是JDBC的DriverManger类,那么mysql驱动是在哪里被加载的呢?或者说DriverManger如何找到JDBC的实现呢?\nDriverManger中有个静态代码块,其中的关键代码如下\n123456789101112131415static &#123;    loadInitialDrivers();    println(\"JDBC DriverManager initialized\");&#125;    private static void loadInitialDrivers() &#123;           ServiceLoader&lt;Driver&gt; loadedDrivers = ServiceLoader.load(Driver.class);           Iterator&lt;Driver&gt; driversIterator = loadedDrivers.iterator();           try&#123;               while(driversIterator.hasNext()) &#123;                   driversIterator.next();               &#125;           &#125;    &#125;\nServiceLoader是JDK6以后针对SPI提供的类,他通过线程上下文加载器来加载接口类(JDBC定义的Driver.class)(这块就是深入理解Java虚拟机中说到的双亲委派模型的第二次被破坏)\n1234public static &lt;S&gt; ServiceLoader&lt;S&gt; load(Class&lt;S&gt; service) &#123;    ClassLoader cl = Thread.currentThread().getContextClassLoader();    return ServiceLoader.load(service, cl);&#125;\nload方法并不真正的去加载类,算是一个懒加载模式,其中实例化了一个LazrIterator对象\n真正加载的工作在loadInitialDrivers中的while循环,这里的迭代器是ServiceLoader的匿名内部类\n123456789101112131415161718192021222324public Iterator&lt;S&gt; iterator() &#123;    return new Iterator&lt;S&gt;() &#123;        Iterator&lt;Map.Entry&lt;String,S&gt;&gt; knownProviders            = providers.entrySet().iterator();        public boolean hasNext() &#123;            if (knownProviders.hasNext())                return true;            return lookupIterator.hasNext();        &#125;        public S next() &#123;            if (knownProviders.hasNext())                return knownProviders.next().getValue();            return lookupIterator.next();        &#125;        public void remove() &#123;            throw new UnsupportedOperationException();        &#125;    &#125;;&#125;\n这里的knownProviders起缓存作用,我们主要关注lookupItreator(LazyIterator实例)\n他的hasNext最终调用下面这个方法\n123456789101112131415161718192021222324private boolean hasNextService() &#123;    if (nextName != null) &#123;        return true;    &#125;    if (configs == null) &#123;        try &#123;            String fullName = PREFIX + service.getName();            if (loader == null)                configs = ClassLoader.getSystemResources(fullName);            else                configs = loader.getResources(fullName);        &#125; catch (IOException x) &#123;            fail(service, \"Error locating configuration files\", x);        &#125;    &#125;    while ((pending == null) || !pending.hasNext()) &#123;        if (!configs.hasMoreElements()) &#123;            return false;        &#125;        pending = parse(service, configs.nextElement());    &#125;    nextName = pending.next();    return true;&#125;\n这里的fullName拼接中,PREFIX是”META-INF/services”,service.getName返回的就是我们最开始load的类名-java.sql.Driver\n\nmysql驱动下就有这么一个文件,其中的内容是\n12com.mysql.jdbc.Drivercom.mysql.fabric.jdbc.FabricMySQLDriver\n解析这个文件,最终也就找到了JDBC的实现类,DriverManger在加载这些实现类的时候,会触发他们的静态代码块\ncom.mysql.jdbc.driver类的静态代码如下\n1234567static &#123;    try &#123;        DriverManager.registerDriver(new Driver());    &#125; catch (SQLException var1) &#123;        throw new RuntimeException(\"Can't register driver!\");    &#125;&#125;\n可以看到”实现方将自己加入到使用方中”\n看一下DriverManger.getConnection方法\n1234567891011121314private static Connection getConnection(    String url, java.util.Properties info, Class&lt;?&gt; caller) throws SQLException &#123;    for(DriverInfo aDriver : registeredDrivers) &#123;        if(isDriverAllowed(aDriver.driver, callerCL)) &#123;            try &#123;                println(\"    trying \" + aDriver.driver.getClass().getName());                Connection con = aDriver.driver.connect(url, info);                if (con != null) &#123;                    return (con);                &#125;            &#125;         &#125;     &#125;&#125;\n遍历registerDrivers调用connect,每个具体的实现类会根据url判断是否是自己的链接格式,比如”jdbc:mysql://localhost:3306/test?XXXX”就会调用mysql的驱动实现\n破坏双亲委派双亲委派规则的可见性规定 “父加载器加载的类对子加载器是可见的,反之,则不可见”\n但是通过我们上面的分析可以知道,通过BootStrapClassLoader加载的DriverManger类确获取到了通过AppClassLoader加载的jdbc具体实现类,这也就是为什么说SPI破坏了双亲委派。\n其根本原因就是DriverManger中加载实现类时是通过线程上下文加载器加载的(默认是AppClassloader),因为无法把具体的实现类放到JDK/lib下\n总结当定义了接口后,只要实现方遵守规则创建一个META-INF/service/服务接口名的文件,并在其中写上具体的接口实现类,就无需在代码中指定就可以完成任意实现类的装载。\n","dateCreated":"2019-08-12T00:07:32+08:00","dateModified":"2019-08-12T00:07:32+08:00","datePublished":"2019-08-12T00:07:32+08:00","description":"","headline":"","image":[],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/08/12/SPI/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/08/12/SPI/"}</script>
-    <meta name="description" content="概念我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类 代码里通过interface引用具体实现类对象 也就是说interface在组织上位于实现方(具体实现类)的包中 相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface) 其思想就是 使用方提供规则,实现方实现规则并将自己加入到使用方中 Dr">
+    <script type="application/ld+json">{"@context":"http://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"},"articleBody":"\n\n概念我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类\n代码里通过interface引用具体实现类对象\n也就是说interface在组织上位于实现方(具体实现类)的包中\n相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface)\n其思想就是 使用方提供规则,实现方实现规则并将自己加入到使用方中\nDriverManger123456789public static void main(String[] args) &#123;    try &#123;        //JDBC4.0以后不再需要这一行diamante        //Class.forName(\"jdbc.mysql.XXX\")        DriverManager.getConnection(\"jdbc:mysql://localhost:3306/test?XXXX\");    &#125; catch (SQLException e) &#123;        e.printStackTrace();    &#125;&#125;\n以上代码是使用mysql的JDBC驱动时的代码\n我们引入mysql的JDBC包以后,并没有显式的与其交互,使用的还是JDBC的DriverManger类,那么mysql驱动是在哪里被加载的呢?或者说DriverManger如何找到JDBC的实现呢?\nDriverManger中有个静态代码块,其中的关键代码如下\n123456789101112131415static &#123;    loadInitialDrivers();    println(\"JDBC DriverManager initialized\");&#125;    private static void loadInitialDrivers() &#123;           ServiceLoader&lt;Driver&gt; loadedDrivers = ServiceLoader.load(Driver.class);           Iterator&lt;Driver&gt; driversIterator = loadedDrivers.iterator();           try&#123;               while(driversIterator.hasNext()) &#123;                   driversIterator.next();               &#125;           &#125;    &#125;\nServiceLoader是JDK6以后针对SPI提供的类,他通过线程上下文加载器来加载接口类(JDBC定义的Driver.class)(这块就是深入理解Java虚拟机中说到的双亲委派模型的第二次被破坏)\n1234public static &lt;S&gt; ServiceLoader&lt;S&gt; load(Class&lt;S&gt; service) &#123;    ClassLoader cl = Thread.currentThread().getContextClassLoader();    return ServiceLoader.load(service, cl);&#125;\nload方法并不真正的去加载类,算是一个懒加载模式,其中实例化了一个LazrIterator对象\n真正加载的工作在loadInitialDrivers中的while循环,这里的迭代器是ServiceLoader的匿名内部类\n123456789101112131415161718192021222324public Iterator&lt;S&gt; iterator() &#123;    return new Iterator&lt;S&gt;() &#123;        Iterator&lt;Map.Entry&lt;String,S&gt;&gt; knownProviders            = providers.entrySet().iterator();        public boolean hasNext() &#123;            if (knownProviders.hasNext())                return true;            return lookupIterator.hasNext();        &#125;        public S next() &#123;            if (knownProviders.hasNext())                return knownProviders.next().getValue();            return lookupIterator.next();        &#125;        public void remove() &#123;            throw new UnsupportedOperationException();        &#125;    &#125;;&#125;\n这里的knownProviders起缓存作用,我们主要关注lookupItreator(LazyIterator实例)\n他的hasNext最终调用下面这个方法\n123456789101112131415161718192021222324private boolean hasNextService() &#123;    if (nextName != null) &#123;        return true;    &#125;    if (configs == null) &#123;        try &#123;            String fullName = PREFIX + service.getName();            if (loader == null)                configs = ClassLoader.getSystemResources(fullName);            else                configs = loader.getResources(fullName);        &#125; catch (IOException x) &#123;            fail(service, \"Error locating configuration files\", x);        &#125;    &#125;    while ((pending == null) || !pending.hasNext()) &#123;        if (!configs.hasMoreElements()) &#123;            return false;        &#125;        pending = parse(service, configs.nextElement());    &#125;    nextName = pending.next();    return true;&#125;\n这里的fullName拼接中,PREFIX是”META-INF/services”,service.getName返回的就是我们最开始load的类名-java.sql.Driver\n\nmysql驱动下就有这么一个文件,其中的内容是\n12com.mysql.jdbc.Drivercom.mysql.fabric.jdbc.FabricMySQLDriver\n解析这个文件,最终也就找到了JDBC的实现类,DriverManger在加载这些实现类的时候,会触发他们的静态代码块\ncom.mysql.jdbc.driver类的静态代码如下\n1234567static &#123;    try &#123;        DriverManager.registerDriver(new Driver());    &#125; catch (SQLException var1) &#123;        throw new RuntimeException(\"Can't register driver!\");    &#125;&#125;\n可以看到”实现方将自己加入到使用方中”\n看一下DriverManger.getConnection方法\n1234567891011121314private static Connection getConnection(    String url, java.util.Properties info, Class&lt;?&gt; caller) throws SQLException &#123;    for(DriverInfo aDriver : registeredDrivers) &#123;        if(isDriverAllowed(aDriver.driver, callerCL)) &#123;            try &#123;                println(\"    trying \" + aDriver.driver.getClass().getName());                Connection con = aDriver.driver.connect(url, info);                if (con != null) &#123;                    return (con);                &#125;            &#125;         &#125;     &#125;&#125;\n遍历registerDrivers调用connect,每个具体的实现类会根据url判断是否是自己的链接格式,比如”jdbc:mysql://localhost:3306/test?XXXX”就会调用mysql的驱动实现\n破坏双亲委派双亲委派规则的可见性规定 “父加载器加载的类对子加载器是可见的,反之,则不可见”\n但是通过我们上面的分析可以知道,通过BootStrapClassLoader加载的DriverManger类确获取到了通过AppClassLoader加载的jdbc具体实现类,这也就是为什么说SPI破坏了双亲委派。\n其根本原因就是DriverManger中加载实现类时是通过线程上下文加载器加载的(默认是AppClassloader),因为无法把具体的实现类放到JDK/lib下\n总结当定义了接口后,只要实现方遵守规则创建一个META-INF/service/服务接口名的文件,并在其中写上具体的接口实现类,就无需在代码中指定就可以完成任意实现类的装载。","dateCreated":"2019-08-11T14:16:42+08:00","dateModified":"2019-08-15T18:32:23+08:00","datePublished":"2019-08-11T14:16:42+08:00","description":"SPI","headline":"SPI","image":["https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png","https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"],"mainEntityOfPage":{"@type":"WebPage","@id":"http://yoursite.com/2019/08/11/SPI/"},"publisher":{"@type":"Organization","name":"一条咸鱼","sameAs":[],"image":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg","logo":{"@type":"ImageObject","url":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"}},"url":"http://yoursite.com/2019/08/11/SPI/","thumbnailUrl":"https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"}</script>
+    <meta name="description" content="SPI">
 <meta property="og:type" content="blog">
-<meta property="og:title" content="一条咸鱼">
-<meta property="og:url" content="http://yoursite.com/2019/08/12/SPI/index.html">
+<meta property="og:title" content="SPI">
+<meta property="og:url" content="http://yoursite.com/2019/08/11/SPI/index.html">
 <meta property="og:site_name" content="一条咸鱼">
-<meta property="og:description" content="概念我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类 代码里通过interface引用具体实现类对象 也就是说interface在组织上位于实现方(具体实现类)的包中 相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface) 其思想就是 使用方提供规则,实现方实现规则并将自己加入到使用方中 Dr">
+<meta property="og:description" content="SPI">
 <meta property="og:locale" content="zh-cn">
 <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spi/mysql-spi.png">
-<meta property="og:updated_time" content="2019-08-11T16:07:32.117Z">
+<meta property="og:updated_time" content="2019-08-15T10:32:23.703Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="一条咸鱼">
-<meta name="twitter:description" content="概念我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类 代码里通过interface引用具体实现类对象 也就是说interface在组织上位于实现方(具体实现类)的包中 相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface) 其思想就是 使用方提供规则,实现方实现规则并将自己加入到使用方中 Dr">
+<meta name="twitter:title" content="SPI">
+<meta name="twitter:description" content="SPI">
 <meta name="twitter:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/spi/mysql-spi.png">
 <meta property="fb:app_id" content="[object Object]">
     
@@ -36,6 +36,12 @@
         <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fhead.jpg"/>
     
     
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli/weekly3/Java.png" />
+    
+    
+        <meta property="og:image" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg"/>
+        <meta class="swiftype" name="image" data-type="enum" content="https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg" />
     
     
     <!--STYLES-->
@@ -130,25 +136,21 @@
 </nav>
 
             
-            <div id="main" data-behavior="4"
-                 class="
-                        hasCoverMetaIn
-                        ">
-                
-<article class="post">
-    
-    
-        <div class="post-header main-content-wrap text-left">
+        <div class="post-header-cover
+                    text-center
+                    post-header-cover--full" style="background-image:url('https://image-1256648750.cos.ap-chengdu.myqcloud.com/javerli%2Fcover%2Fcover.jpg');" data-behavior="4">
+            
+                <div class="post-header main-content-wrap text-center">
     
         <h1 class="post-title">
-            (无标题)
+            SPI
         </h1>
     
     
         <div class="post-meta">
-    <time datetime="2019-08-12T00:07:32+08:00">
+    <time datetime="2019-08-11T14:16:42+08:00">
 	
-		    8月 12, 2019
+		    8月 11, 2019
     	
     </time>
     
@@ -157,10 +159,22 @@
     
 </div>
 
+            
+        </div>
+
+            <div id="main" data-behavior="4"
+                 class="hasCover
+                        hasCoverMetaIn
+                        ">
+                
+<article class="post">
+    
     
     <div class="post-content markdown">
         <div class="main-content-wrap">
-            <h1 id="概念"><a href="#概念" class="headerlink" title="概念"></a>概念</h1><p>我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类</p>
+            <!-- excerpt -->
+<h1 id="table-of-contents">目录</h1><ol class="toc"><li class="toc-item toc-level-1"><a class="toc-link" href="#概念"><span class="toc-text">概念</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#DriverManger"><span class="toc-text">DriverManger</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#破坏双亲委派"><span class="toc-text">破坏双亲委派</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#总结"><span class="toc-text">总结</span></a></li></ol>
+<h1 id="概念"><a href="#概念" class="headerlink" title="概念"></a>概念</h1><p>我们在编程中经常说面向接口编程,所以我们一般会定义好几个interface,再写几个实现类</p>
 <p>代码里通过interface引用具体实现类对象</p>
 <p>也就是说interface在组织上位于实现方(具体实现类)的包中</p>
 <p>相反的,当interface在组织上位于调用方中时,就是SPI(service provider interface)</p>
@@ -193,7 +207,6 @@
 <p>但是通过我们上面的分析可以知道,通过BootStrapClassLoader加载的DriverManger类确获取到了通过AppClassLoader加载的jdbc具体实现类,这也就是为什么说SPI破坏了双亲委派。</p>
 <p>其根本原因就是DriverManger中加载实现类时是通过线程上下文加载器加载的(默认是AppClassloader),因为无法把具体的实现类放到JDK/lib下</p>
 <h1 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h1><p>当定义了接口后,只要实现方遵守规则创建一个META-INF/service/服务接口名的文件,并在其中写上具体的接口实现类,就无需在代码中指定就可以完成任意实现类的装载。</p>
-
             
 
         </div>
@@ -225,7 +238,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
@@ -235,7 +248,7 @@
         
         <li class="post-action">
             
-                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
             
                 <i class="fa fa-list" aria-hidden="true"></i>
             </a>
@@ -286,7 +299,7 @@
     </nav>
     <ul class="post-actions post-action-share">
         <li class="post-action hide-lg hide-md hide-sm">
-            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Diesen Beitrag teilen">
+            <a class="post-action-btn btn btn--default btn-open-shareoptions" href="#btn-open-shareoptions" aria-label="Share this post">
                 <i class="fa fa-share-alt" aria-hidden="true"></i>
             </a>
         </li>
@@ -296,7 +309,7 @@
         
         <li class="post-action">
             
-                <a class="post-action-btn btn btn--default" href="#" aria-label="Nach oben">
+                <a class="post-action-btn btn btn--default" href="#table-of-contents" aria-label="目录">
             
                 <i class="fa fa-list" aria-hidden="true"></i>
             </a>
